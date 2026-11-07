@@ -1,0 +1,13 @@
+apps\web\README.md
+apps\web\src\app\Rotas.tsx
+apps\web\src\layouts\EquipeLayout.tsx
+apps\web\src\pages\equipe\Fila.test.tsx
+apps\web\src\pages\equipe\indicadores.css
+apps\web\src\pages\equipe\Indicadores.test.tsx
+apps\web\src\pages\equipe\Indicadores.tsx
+apps\web\src\pages\equipe\periodo-indicadores.test.ts
+apps\web\src\pages\equipe\periodo-indicadores.ts
+apps\web\src\shared\api\generated\schema.d.ts
+docs\architecture\frontend.md
+docs\product\contexto-frontend.md
+PLAN.md

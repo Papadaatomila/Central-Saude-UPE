@@ -1,0 +1,4421 @@
+From ba880c93758a50fa27ed34223a6f8b67a23b6a07 Mon Sep 17 00:00:00 2001
+From: ViniciusMurta <viniciusmurta2004@gmail.com>
+Date: Sat, 7 Nov 2026 19:26:48 -0300
+Subject: [PATCH] feat(web): tela de indicadores do gestor
+
+---
+ PLAN.md                                       |    2 +-
+ apps/web/README.md                            |    4 +
+ apps/web/src/app/Rotas.tsx                    |    9 +-
+ apps/web/src/layouts/EquipeLayout.tsx         |    3 +-
+ apps/web/src/pages/equipe/Fila.test.tsx       |   14 +-
+ .../web/src/pages/equipe/Indicadores.test.tsx |   95 +
+ apps/web/src/pages/equipe/Indicadores.tsx     |  120 ++
+ apps/web/src/pages/equipe/indicadores.css     |   18 +
+ .../pages/equipe/periodo-indicadores.test.ts  |   16 +
+ .../src/pages/equipe/periodo-indicadores.ts   |   20 +
+ apps/web/src/shared/api/generated/schema.d.ts | 1864 ++++++++---------
+ docs/architecture/frontend.md                 |    4 +
+ docs/product/contexto-frontend.md             |    4 +-
+ docs/validation/indicadores-entrega.md        |   47 +
+ .../validation/indicadores-lgpd-pernambuco.md |   33 +
+ 15 files changed, 1312 insertions(+), 941 deletions(-)
+ create mode 100644 apps/web/src/pages/equipe/Indicadores.test.tsx
+ create mode 100644 apps/web/src/pages/equipe/Indicadores.tsx
+ create mode 100644 apps/web/src/pages/equipe/indicadores.css
+ create mode 100644 apps/web/src/pages/equipe/periodo-indicadores.test.ts
+ create mode 100644 apps/web/src/pages/equipe/periodo-indicadores.ts
+ create mode 100644 docs/validation/indicadores-entrega.md
+ create mode 100644 docs/validation/indicadores-lgpd-pernambuco.md
+
+diff --git a/PLAN.md b/PLAN.md
+index cf5b5e7..3c47f03 100644
+--- a/PLAN.md
++++ b/PLAN.md
+@@ -94,7 +94,7 @@ As datas são propostas; o grupo ajusta.
+ - [ ] **Seed de demonstração na VM** (roteiro na seção 6 do README: parar API e Worker, ligar `DEMO_SEED_PERMITIDO`, rodar, desligar, subir).
+ - [ ] **Ensaio ponta a ponta** com dois navegadores (seção 7), no celular e no computador.
+ - [ ] Teste rápido de usabilidade com 2 ou 3 pessoas de fora do grupo, no celular; anotar para o relatório.
+-- [ ] Se sobrar tempo: tela de indicadores.
++- [x] Se sobrar tempo: tela de indicadores.
+ 
+ ### Semana 4 — 20/11 a 26/11: congelamento
+ 
+diff --git a/apps/web/README.md b/apps/web/README.md
+index 5b3a805..f3d9f2d 100644
+--- a/apps/web/README.md
++++ b/apps/web/README.md
+@@ -201,3 +201,7 @@ Atendente pode classificar em Em análise e reclassificar em Aguardando vaga. Ge
+ Sucesso anuncia o risco e atualiza o detalhe e a Fila. Conflito de estado recarrega sem perder o motivo. Validação localizada associa erro e foco ao campo; erros sem localização ficam no alerta global. Escritas usam CSRF, não repetem falhas automaticamente e bloqueiam clique duplo. Dados e motivo ficam somente em memória, com proteção contra respostas de sessões antigas. O formulário fica ao lado das respostas no desktop e abaixo delas no celular.
+ 
+ “Critérios da regulação”, com consulta de perguntas e edição das respostas da equipe, fica para depois do MVP. Também ficam pendentes no contrato posição e agendamento ativo no detalhe, perguntas não respondidas, critérios por nível de risco e controle de versão. A tela não inventa esses dados.
++
++## Indicadores do gestor
++
++A rota `/equipe/indicadores` é carregada sob demanda com React.lazy e permitida apenas para GESTOR e ADMIN. Usa indicadores agregados da API, filtros de datas civis em Recife e fila do escopo, com estado na URL. Últimas 4/8 semanas correspondem a 28/56 dias inclusivos até hoje. O período personalizado consulta somente ao aplicar. Os cartões explicam os recortes de cada métrica; taxas nulas não representam zero. A fila atual independe do período. O gráfico semanal possui tabela acessível expansível. Não há persistência, polling nem repetição automática de consultas; o Retry-After é respeitado na nova tentativa.
+diff --git a/apps/web/src/app/Rotas.tsx b/apps/web/src/app/Rotas.tsx
+index 5c7a022..16e8bca 100644
+--- a/apps/web/src/app/Rotas.tsx
++++ b/apps/web/src/app/Rotas.tsx
+@@ -1,3 +1,4 @@
++import { lazy, Suspense } from 'react'
+ import { Navigate, Route, Routes, useOutletContext } from 'react-router'
+ import { EquipeLayout } from '../layouts/EquipeLayout'
+ import { PacienteLayout } from '../layouts/PacienteLayout'
+@@ -9,13 +10,15 @@ import { NovaSolicitacao } from '../pages/paciente/NovaSolicitacao'
+ import { DetalhePedido } from '../pages/paciente/DetalhePedido'
+ import { Avisos } from '../pages/paciente/Avisos'
+ import { Fila } from '../pages/equipe/Fila'
+-import { DetalhePedidoEquipe } from '../pages/equipe/DetalhePedidoEquipe'
++const DetalhePedidoEquipe = lazy(() => import('../pages/equipe/DetalhePedidoEquipe').then((modulo) => ({ default: modulo.DetalhePedidoEquipe })))
+ import { CriarConta } from '../pages/auth/CriarConta'
+ import { TrocarSenha } from '../pages/auth/TrocarSenha'
+ import { rotaTrocarSenha } from '../shared/auth/troca-de-senha'
+ import { rotaInicial } from '../shared/auth/retorno'
+ import type { Sessao } from '../shared/auth/session'
+ 
++const Indicadores = lazy(() => import('../pages/equipe/Indicadores'))
++
+ function Inicio() {
+   const sessao = useOutletContext<Sessao>()
+   return <Navigate to={rotaInicial(sessao.papel)} replace />
+@@ -45,8 +48,8 @@ export function Rotas() {
+         <Route element={<ExigirPapel papeis={['ATENDENTE', 'GESTOR', 'ADMIN']} />}>
+           <Route path="/equipe" element={<EquipeLayout />}>
+             <Route index element={<Navigate to="/equipe/fila" replace />} />
+-            <Route path="fila" element={<Fila />} />
+-            <Route path="solicitacoes/:id" element={<DetalhePedidoEquipe />} />
++            <Route path="fila" element={<Fila />} /><Route element={<ExigirPapel papeis={['GESTOR', 'ADMIN']} />}><Route path="indicadores" element={<Suspense fallback={<p role="status">Carregando indicadores…</p>}><Indicadores /></Suspense>} /></Route>
++            <Route path="solicitacoes/:id" element={<Suspense fallback={<p role="status">Carregando pedido…</p>}><DetalhePedidoEquipe /></Suspense>} />
+           </Route>
+         </Route>
+         <Route path="*" element={<main><p role="alert">Página não encontrada.</p></main>} />
+diff --git a/apps/web/src/layouts/EquipeLayout.tsx b/apps/web/src/layouts/EquipeLayout.tsx
+index 0a47e35..6a8f69c 100644
+--- a/apps/web/src/layouts/EquipeLayout.tsx
++++ b/apps/web/src/layouts/EquipeLayout.tsx
+@@ -9,6 +9,7 @@ const papeis: Record<Papel, string> = { PACIENTE: 'Paciente', ATENDENTE: 'Atende
+ // Novas telas entram aqui com os papéis permitidos quando a rota existir.
+ const itensMenu: { texto: string; rota: string; papeis: readonly Papel[] }[] = [
+   { texto: 'Fila', rota: '/equipe/fila', papeis: ['ATENDENTE', 'GESTOR', 'ADMIN'] },
++  { texto: 'Indicadores', rota: '/equipe/indicadores', papeis: ['GESTOR', 'ADMIN'] },
+ ]
+ export function EquipeLayout() {
+   const sessao = useOutletContext<Sessao>()
+@@ -37,7 +38,7 @@ export function EquipeLayout() {
+       </div>
+       <div id="menu-equipe" className={`conteudo-menu-equipe${aberto ? ' aberto' : ''}`}>
+         <nav aria-label="Área da equipe">{itensMenu.filter((item) => item.papeis.includes(sessao.papel)).map((item) =>
+-          <Link key={item.rota} to={`${item.rota}?${query}`} aria-current={location.pathname === item.rota || (item.rota === '/equipe/fila' && location.pathname.startsWith('/equipe/solicitacoes/')) ? 'page' : undefined} onClick={navegar}>{item.texto}</Link>)}
++          <Link key={item.rota} to={item.rota === '/equipe/fila' ? `${item.rota}?${query}` : item.rota} aria-current={location.pathname === item.rota || (item.rota === '/equipe/fila' && location.pathname.startsWith('/equipe/solicitacoes/')) ? 'page' : undefined} onClick={navegar}>{item.texto}</Link>)}
+         </nav>
+         <div className="identificacao-equipe"><p>{papeis[sessao.papel]}</p><Botao variante="secundario" carregando={saindo} onClick={() => void sair()}>Sair</Botao></div>
+       </div>
+diff --git a/apps/web/src/pages/equipe/Fila.test.tsx b/apps/web/src/pages/equipe/Fila.test.tsx
+index 0bfebe7..74724ef 100644
+--- a/apps/web/src/pages/equipe/Fila.test.tsx
++++ b/apps/web/src/pages/equipe/Fila.test.tsx
+@@ -76,7 +76,7 @@ describe('RF-031/032 — layout e painel da equipe', () => {
+     expect(screen.getByText(texto)).toBeTruthy()
+     expect(screen.queryByText(`${texto} · PROCAPE`)).toBeNull()
+     expect(screen.getByRole('link', { name: 'Fila' }).getAttribute('aria-current')).toBe('page')
+-    expect(screen.queryByRole('link', { name: 'Indicadores' })).toBeNull()
++    expect(Boolean(screen.queryByRole('link', { name: 'Indicadores' }))).toBe(valor !== 'ATENDENTE')
+     expect(screen.getByRole('link', { name: 'Pular para o conteúdo' })).toBeTruthy()
+     await user.click(screen.getByRole('button', { name: 'Sair' }))
+     await screen.findByRole('heading', { name: 'Entrar' })
+@@ -259,7 +259,7 @@ describe('RF-031/032 — layout e painel da equipe', () => {
+   })
+   it.each(['ATENDENTE', 'GESTOR', 'ADMIN'] as const)('/ manda %s para Fila', async (valor) => {
+     papel = valor; abrir('/'); await tabela()
+-    expect(screen.getByTestId('url').textContent).toMatch(/^\/equipe\/fila\?/)
++    await waitFor(() => expect(screen.getByTestId('url').textContent).toMatch(/^\/equipe\/fila\?/))
+   })
+   it('paciente em rota da equipe vai para Meus atendimentos', async () => {
+     papel = 'PACIENTE'; abrir('/equipe/fila')
+@@ -303,3 +303,13 @@ describe('RF-031/032 — layout e painel da equipe', () => {
+     expect(screen.getByText('Gestor')).toBeTruthy()
+   })
+ })
++
++
++
++it('ATENDENTE em indicadores volta à Fila sem consultar indicadores', async () => {
++  let chamadasIndicadores = 0
++  servidor.use(msw.get('*/api/v1/equipe/indicadores', () => { chamadasIndicadores++; return HttpResponse.json({}) }))
++  abrir('/equipe/indicadores')
++  await tabela()
++  expect(chamadasIndicadores).toBe(0)
++})
+diff --git a/apps/web/src/pages/equipe/Indicadores.test.tsx b/apps/web/src/pages/equipe/Indicadores.test.tsx
+new file mode 100644
+index 0000000..afaf460
+--- /dev/null
++++ b/apps/web/src/pages/equipe/Indicadores.test.tsx
+@@ -0,0 +1,95 @@
++import { QueryClientProvider } from '@tanstack/react-query'
++import { render, screen, waitFor } from '@testing-library/react'
++import userEvent from '@testing-library/user-event'
++import { MemoryRouter, useNavigate } from 'react-router'
++import { afterAll, afterEach, beforeAll, beforeEach, expect, it } from 'vitest'
++import { http as msw, HttpResponse } from 'msw'
++import { setupServer } from 'msw/node'
++import { axe } from 'vitest-axe'
++import { criarQueryClient } from '../../app/query-client'
++import { http } from '../../shared/api/http'
++import Indicadores from './Indicadores'
++const resumo = { confirmadas: 29, recusadas: 7, expiradas: 4, propostas_encerradas: 40, propostas_canceladas_sem_resposta: 0, taxa_confirmacao: .725, taxa_recusa: .175, taxa_expiracao: .1, realizadas: 10, faltas: 0, taxa_faltas: null, solicitacoes_criadas: 1000, desistencias: 3, taxa_desistencia: .003, vagas_ofertadas: 40, vagas_ocupadas: 29, vagas_reaproveitadas: 4, vagas_perdidas: 2 }
++let chamadas: URL[] = []
++const servidor = setupServer(
++  msw.get('*/api/v1/equipe/filas', () => HttpResponse.json({ itens: [], total: 0 })),
++  msw.get('*/api/v1/equipe/indicadores', ({ request }) => {
++    const url = new URL(request.url); chamadas.push(url)
++    return HttpResponse.json({ de: url.searchParams.get('de'), ate: url.searchParams.get('ate'), fila_id: null, unidade_id: null, totais: resumo, semanas: [{ ...resumo, semana: '2026-11-02' }], tempo_de_espera: { mediana_dias: 4.2, p90_dias: 8.9, confirmacoes: 29 }, fila_atual: { VERMELHO: 2, AMARELO: 3, VERDE: 4 } })
++  }),
++)
++beforeAll(() => servidor.listen({ onUnhandledFrame: 'error' }))
++afterAll(() => servidor.close())
++beforeEach(() => { chamadas = []; http.iniciarSessao() })
++afterEach(() => servidor.resetHandlers())
++function Voltar() { const navegar = useNavigate(); return <button onClick={() => void navegar(-1)}>Voltar no histórico</button> }
++function abrir() { return render(<QueryClientProvider client={criarQueryClient()}><MemoryRouter initialEntries={['/equipe/indicadores?de=2026-10-01&ate=2026-11-07']}><Indicadores /><Voltar /></MemoryRouter></QueryClientProvider>) }
++it('formata cartões, nulos, riscos, gráfico e tabela sem violações axe', async () => {
++  const { container } = abrir()
++  await screen.findByText('72,5%')
++  expect(screen.getAllByText('1.000')).toHaveLength(2)
++  expect(screen.getByText('—')).toBeTruthy()
++  expect(screen.getByText(/4,2 dias.*8,9 dias/)).toBeTruthy()
++  for (const risco of ['Alto', 'Médio', 'Baixo']) expect(screen.getByText(risco)).toBeTruthy()
++  expect(screen.getByRole('img')).toBeTruthy()
++  await userEvent.click(screen.getByText('Ver tabela'))
++  expect(screen.getByRole('table', { name: 'Movimento semanal das filas' })).toBeTruthy()
++  expect((await axe(container)).violations).toEqual([])
++  expect(chamadas).toHaveLength(1)
++})
++it('personalizado aguarda Aplicar e impede período inválido', async () => {
++  abrir(); await screen.findByText('72,5%')
++  const user = userEvent.setup()
++  await user.clear(screen.getByLabelText('De'))
++  await user.type(screen.getByLabelText('De'), '2026-10-03')
++  expect(chamadas).toHaveLength(1)
++  await user.click(screen.getByRole('button', { name: 'Aplicar' }))
++  await waitFor(() => expect(chamadas).toHaveLength(2))
++  expect(chamadas[1]!.searchParams.get('de')).toBe('2026-10-03')
++  await user.clear(screen.getByLabelText('Até'))
++  await user.type(screen.getByLabelText('Até'), '2026-10-01')
++  await user.click(screen.getByRole('button', { name: 'Aplicar' }))
++  expect(chamadas).toHaveLength(2)
++})
++it.each([403, 404, 422, 503])('mostra erro %s e respeita Retry-After', async (status) => {
++  servidor.use(msw.get('*/api/v1/equipe/indicadores', () => HttpResponse.json({ status, type: status === 503 ? '/problemas/consulta-demorada' : 'about:blank' }, { status, headers: { 'Content-Type': 'application/problem+json', 'Retry-After': '30' } })))
++  abrir()
++  const botao = await screen.findByRole('button', { name: 'Tentar novamente' })
++  expect(botao.hasAttribute('disabled')).toBe(true)
++})
++
++
++it('cada período predefinido gera uma consulta sem fila_id', async () => {
++  abrir(); await screen.findByText('72,5%')
++  const user = userEvent.setup()
++  for (const [indice, tipo] of ['4', '8', 'mes'].entries()) {
++    await user.selectOptions(screen.getByLabelText('Período'), tipo)
++    await waitFor(() => expect(chamadas).toHaveLength(indice + 2))
++    expect(chamadas.at(-1)!.searchParams.has('fila_id')).toBe(false)
++  }
++})
++it('fila específica envia somente seu id e Todas remove o parâmetro', async () => {
++  const id = '00000000-0000-4000-8000-000000000001'
++  servidor.use(msw.get('*/api/v1/equipe/filas', () => HttpResponse.json({ total: 1, itens: [{ id, nome: 'Fila sintética', unidade_sigla: 'CISAM', especialidade: 'Exemplo', ativa: true, contagem_por_status: {} }] })))
++  abrir(); await screen.findByRole('option', { name: 'CISAM · Fila sintética' }); await screen.findByText('72,5%')
++  const user = userEvent.setup()
++  await user.selectOptions(screen.getByLabelText('Fila'), id)
++  await waitFor(() => expect(chamadas).toHaveLength(2))
++  expect(chamadas[1]!.searchParams.get('fila_id')).toBe(id)
++  await user.selectOptions(screen.getByLabelText('Fila'), '')
++  await waitFor(() => expect(chamadas).toHaveLength(3))
++  expect(chamadas[2]!.searchParams.has('fila_id')).toBe(false)
++})
++
++it('Voltar restaura as datas da URL e do formulário', async () => {
++  abrir(); await screen.findByText('72,5%')
++  const user = userEvent.setup()
++  await user.clear(screen.getByLabelText('De'))
++  await user.type(screen.getByLabelText('De'), '2026-10-04')
++  await user.click(screen.getByRole('button', { name: 'Aplicar' }))
++  await waitFor(() => expect(chamadas).toHaveLength(2))
++  await user.click(screen.getByRole('button', { name: 'Voltar no histórico' }))
++  await waitFor(() => expect(chamadas).toHaveLength(3))
++  expect((screen.getByLabelText('De') as HTMLInputElement).value).toBe('2026-10-01')
++  expect(chamadas[2]!.searchParams.get('de')).toBe('2026-10-01')
++})
+diff --git a/apps/web/src/pages/equipe/Indicadores.tsx b/apps/web/src/pages/equipe/Indicadores.tsx
+new file mode 100644
+index 0000000..9d3fc5a
+--- /dev/null
++++ b/apps/web/src/pages/equipe/Indicadores.tsx
+@@ -0,0 +1,120 @@
++import { keepPreviousData, useQuery } from '@tanstack/react-query'
++import { useEffect, useState } from 'react'
++import { useSearchParams } from 'react-router'
++import type { components } from '../../shared/api/generated/schema'
++import { http } from '../../shared/api/http'
++import { ApiError } from '../../shared/api/problem-details'
++import { CampoSelecao } from '../../shared/ui/CampoSelecao'
++import { Campo } from '../../shared/ui/Campo'
++import { Botao } from '../../shared/ui/Botao'
++import { Alerta } from '../../shared/ui/Alerta'
++import { Cartao } from '../../shared/ui/Cartao'
++import { SeloRisco } from './PedidosFila'
++import { filasEquipeOptions } from './api'
++import { hojeRecife, periodo, validarPeriodo, rotuloDia } from './periodo-indicadores'
++import './indicadores.css'
++
++type Saida = components['schemas']['IndicadoresSaida']
++const inteiro = (n: number) => n.toLocaleString('pt-BR')
++const decimal = (n: number | null) => n === null ? '—' : n.toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })
++const percentual = (n: number | null) => n === null ? '—' : `${decimal(n * 100)}%`
++function CartaoNumero({ titulo, valor, ajuda }: { titulo: string; valor: string; ajuda: string }) {
++  return <Cartao><h2>{titulo}</h2><p className="indicador-numero">{valor}</p><p>{ajuda}</p></Cartao>
++}
++export default function Indicadores() {
++  const [params, setParams] = useSearchParams()
++  const padrao = periodo('4')
++  const de = params.get('de') ?? padrao.de
++  const ate = params.get('ate') ?? padrao.ate
++  const fila = params.get('fila') ?? ''
++  const [modo, setModo] = useState(params.has('de') ? 'personalizado' : '4')
++  const [inicio, setInicio] = useState(de)
++  const [fim, setFim] = useState(ate)
++  const [erroLocal, setErroLocal] = useState('')
++  const chaveUrl = `${de}/${ate}/${fila}`
++  const [urlAnterior, setUrlAnterior] = useState(chaveUrl)
++  if (urlAnterior !== chaveUrl) {
++    setUrlAnterior(chaveUrl)
++    setInicio(de)
++    setFim(ate)
++    setErroLocal('')
++    const preset = ['4', '8', 'mes'].find((tipo) => { const p = periodo(tipo); return p.de === de && p.ate === ate })
++    setModo(preset ?? 'personalizado')
++  }
++  const [agora, setAgora] = useState(Date.now)
++  const mesComUmDia = de === ate && de === hojeRecife() && de.endsWith('-01')
++  const erroPeriodo = mesComUmDia ? '' : validarPeriodo(de, ate)
++  const filaValida = !fila || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(fila)
++  const filas = useQuery({ ...filasEquipeOptions, refetchOnWindowFocus: false, refetchOnReconnect: false })
++  const consulta = useQuery({
++    queryKey: ['indicadores', de, ate, fila],
++    queryFn: ({ signal }) => {
++      const busca = new URLSearchParams({ de, ate })
++      if (fila) busca.set('fila_id', fila)
++      return http.request<Saida>(`/equipe/indicadores?${busca}`, { signal })
++    },
++    enabled: !erroPeriodo && filaValida,
++    placeholderData: keepPreviousData,
++    refetchOnWindowFocus: false, refetchOnReconnect: false, retry: false,
++  })
++  const falha = consulta.error instanceof ApiError ? consulta.error : undefined
++  const retry = falha?.response.headers.get('Retry-After')
++  const espera = retry ? (/^\d+$/.test(retry) ? consulta.errorUpdatedAt + Number(retry) * 1000 : Date.parse(retry)) : 0
++  const bloqueado = Boolean(consulta.isError && espera > agora)
++  useEffect(() => {
++    if (!bloqueado) return
++    const timer = setInterval(() => setAgora(Date.now()), 250)
++    return () => clearInterval(timer)
++  }, [bloqueado])
++  function aplicar(a: string, b: string, f = fila, diaUnicoDoMes = false) {
++    const erro = diaUnicoDoMes && a === b && a === hojeRecife() && a.endsWith('-01') ? '' : validarPeriodo(a, b)
++    setErroLocal(erro)
++    if (erro) return
++    setParams({ de: a, ate: b, ...(f ? { fila: f } : {}) })
++  }
++  const dados = consulta.data
++  const t = dados?.totais
++  const semMovimento = t && ![t.solicitacoes_criadas, t.confirmadas, t.recusadas, t.expiradas, t.realizadas, t.faltas, t.vagas_ofertadas, t.desistencias].some(Boolean)
++  const erroFiltro = erroLocal || erroPeriodo || (falha?.problem.status === 422 ? 'Confira o período informado (até 366 dias).' : '')
++  return <section className="indicadores"><h1>Indicadores</h1><p>Acompanhe os movimentos das filas do seu escopo.</p>
++    <div className="indicadores-filtros">
++      <CampoSelecao rotulo="Período" value={modo} onChange={(e) => {
++        setModo(e.target.value)
++        if (e.target.value !== 'personalizado') { const p = periodo(e.target.value); setInicio(p.de); setFim(p.ate); aplicar(p.de, p.ate, fila, e.target.value === 'mes') }
++      }}><option value="4">Últimas 4 semanas</option><option value="8">Últimas 8 semanas</option><option value="mes">Este mês</option><option value="personalizado">Personalizado</option></CampoSelecao>
++      <CampoSelecao rotulo="Fila" value={fila} disabled={filas.isPending || filas.isError} onChange={(e) => aplicar(de, ate, e.target.value, mesComUmDia)}>
++        <option value="">Todas as minhas filas</option>{filas.data?.map((f) => <option key={f.id} value={f.id}>{f.unidade_sigla} · {f.nome}</option>)}
++      </CampoSelecao>
++    </div>
++    {modo === 'personalizado' && <form className="indicadores-filtros" onSubmit={(e) => { e.preventDefault(); aplicar(inicio, fim) }}>
++      <Campo rotulo="De" type="date" value={inicio} max={hojeRecife()} onChange={(e) => setInicio(e.target.value)} erro={erroFiltro || undefined} />
++      <Campo rotulo="Até" type="date" value={fim} max={hojeRecife()} onChange={(e) => setFim(e.target.value)} />
++      <Botao type="submit">Aplicar</Botao>
++    </form>}
++    {erroFiltro && <Alerta>{erroFiltro}</Alerta>}{!filaValida && <Alerta>Confira a fila informada no endereço.</Alerta>}
++    {filas.isError && <Alerta>Não foi possível carregar as filas. <Botao onClick={() => void filas.refetch()}>Carregar filas</Botao></Alerta>}
++    {consulta.isPending && !erroPeriodo && filaValida && <p role="status">Carregando indicadores…</p>}
++    {consulta.isError && <Alerta>{falha?.problem.status === 403 ? 'Indicadores indisponíveis para este acesso.' : falha?.problem.status === 404 ? 'Fila não encontrada ou indisponível para este acesso.' : falha?.message ?? 'Não foi possível carregar os indicadores.'}
++      <Botao disabled={bloqueado} onClick={() => { setAgora(Date.now()); void consulta.refetch() }}>Tentar novamente</Botao>{bloqueado && <p>Aguarde o prazo para tentar novamente.</p>}
++    </Alerta>}
++    {dados && <div aria-busy={consulta.isFetching} className={consulta.isFetching ? 'indicadores-atualizando' : undefined}>
++      <p role="status">{consulta.isFetching ? 'Atualizando indicadores…' : `Indicadores de ${rotuloDia(dados.de)} a ${rotuloDia(dados.ate)}, ${dados.fila_id ? filas.data?.find((f) => f.id === dados.fila_id)?.nome ?? 'fila selecionada' : 'todas as filas'}`}</p>
++      {semMovimento && <p>Nenhum movimento neste período.</p>}
++      <div className="indicadores-cartoes">
++        <CartaoNumero titulo="Taxa de confirmação" valor={percentual(dados.totais.taxa_confirmacao)} ajuda={dados.totais.taxa_confirmacao === null ? 'sem dados no período' : 'Confirmadas ÷ propostas encerradas, pela data da proposta.'} />
++        <CartaoNumero titulo="Taxa de faltas" valor={percentual(dados.totais.taxa_faltas)} ajuda={dados.totais.taxa_faltas === null ? 'sem dados no período' : 'Faltas ÷ atendimentos realizados e faltas, pela data da vaga.'} />
++        <CartaoNumero titulo="Tempo de espera" valor={`${decimal(dados.tempo_de_espera.mediana_dias)} dias (mediana) · ${decimal(dados.tempo_de_espera.p90_dias)} dias (P90)`} ajuda={`${inteiro(dados.tempo_de_espera.confirmacoes)} confirmações usadas. Da entrada na fila à primeira confirmação no período.${dados.tempo_de_espera.mediana_dias === null ? ' sem dados no período' : ''}`} />
++        <CartaoNumero titulo="Vagas reaproveitadas" valor={inteiro(dados.totais.vagas_reaproveitadas)} ajuda="Proposta desfeita e depois confirmada por outro pedido." />
++        <CartaoNumero titulo="Vagas perdidas" valor={inteiro(dados.totais.vagas_perdidas)} ajuda="Vagas ofertadas já iniciadas sem agendamento confirmado, realizado ou com falta." />
++        <CartaoNumero titulo="Pedidos criados" valor={inteiro(dados.totais.solicitacoes_criadas)} ajuda="Pedidos criados no período escolhido." />
++        <CartaoNumero titulo="Desistências" valor={inteiro(dados.totais.desistencias)} ajuda="Desses pedidos, os cancelados pelo paciente com motivo." />
++      </div>
++      <h2>Fila agora</h2><p>Não depende do período escolhido.</p><ul className="indicadores-riscos">{(['VERMELHO', 'AMARELO', 'VERDE'] as const).map((r) => <li key={r}><SeloRisco valor={r} /> {inteiro(dados.fila_atual[r] ?? 0)}</li>)}</ul>
++      <h2>Semana a semana</h2><p>Pedidos criados e consultas confirmadas. Confirmações agrupadas pela data da proposta.</p>
++      <div className="indicadores-grafico" role="img" aria-label={`Pedidos criados e consultas confirmadas em ${dados.semanas.length} semanas. Valores disponíveis em Ver tabela.`}>
++        {dados.semanas.map((s) => { const max = Math.max(1, ...dados.semanas.flatMap((x) => [x.solicitacoes_criadas, x.confirmadas])); return <div className="indicadores-semana" key={s.semana}><div className="indicadores-barras"><span title={`Pedidos: ${s.solicitacoes_criadas}`} style={{ height: `${s.solicitacoes_criadas / max * 100}%` }} /><span title={`Confirmadas: ${s.confirmadas}`} style={{ height: `${s.confirmadas / max * 100}%` }} /></div><span>{rotuloDia(s.semana)}</span></div> })}
++      </div><p>Azul: pedidos criados · Verde: consultas confirmadas</p>
++      <details><summary>Ver tabela</summary><div className="indicadores-tabela"><table><caption>Movimento semanal das filas</caption><thead><tr><th scope="col">Semana</th><th scope="col">Pedidos criados</th><th scope="col">Consultas confirmadas</th></tr></thead><tbody>{dados.semanas.map((s) => <tr key={s.semana}><th scope="row">{rotuloDia(s.semana)}</th><td>{inteiro(s.solicitacoes_criadas)}</td><td>{inteiro(s.confirmadas)}</td></tr>)}</tbody></table></div></details>
++    </div>}
++  </section>
++}
+diff --git a/apps/web/src/pages/equipe/indicadores.css b/apps/web/src/pages/equipe/indicadores.css
+new file mode 100644
+index 0000000..fb3497a
+--- /dev/null
++++ b/apps/web/src/pages/equipe/indicadores.css
+@@ -0,0 +1,18 @@
++.indicadores { min-width: 0; }
++.indicadores-filtros { display: flex; flex-wrap: wrap; gap: 1rem; align-items: end; margin-bottom: 1rem; }
++.indicadores-filtros .campo { flex: 1 1 14rem; min-width: 0; }
++.indicadores-filtros input, .indicadores-filtros select { width: 100%; min-height: 44px; }
++.indicadores-cartoes { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 1rem; margin-block: 1rem 2rem; }
++.indicadores-cartoes h2 { font-size: 1.05rem; }
++.indicador-numero { font-size: 1.65rem; font-weight: 700; overflow-wrap: anywhere; }
++.indicadores-atualizando { opacity: .55; }
++.indicadores-riscos { display: flex; flex-wrap: wrap; gap: 2rem; list-style: none; padding: 0; }
++.indicadores-grafico { display: flex; gap: 1rem; overflow-x: auto; padding: 1rem .25rem; }
++.indicadores-semana { flex: 1 0 3.5rem; text-align: center; }
++.indicadores-barras { height: 160px; display: flex; align-items: end; justify-content: center; gap: 4px; }
++.indicadores-barras span { background: #235da8; width: 20px; }
++.indicadores-barras span + span { background: #247348; }
++.indicadores summary { min-height: 44px; padding-block: .75rem; }
++.indicadores-tabela { overflow-x: auto; }
++.indicadores-tabela table { width: 100%; border-collapse: collapse; }
++.indicadores-tabela th, .indicadores-tabela td { padding: .65rem; text-align: left; border-bottom: 1px solid #888; }
+diff --git a/apps/web/src/pages/equipe/periodo-indicadores.test.ts b/apps/web/src/pages/equipe/periodo-indicadores.test.ts
+new file mode 100644
+index 0000000..7722ea7
+--- /dev/null
++++ b/apps/web/src/pages/equipe/periodo-indicadores.test.ts
+@@ -0,0 +1,16 @@
++import { describe, expect, it } from 'vitest'
++import { hojeRecife, periodo, validarPeriodo, rotuloDia } from './periodo-indicadores'
++describe('Indicadores — datas civis em Recife', () => {
++  it('usa o dia anterior durante a virada UTC', () => expect(hojeRecife(new Date('2026-11-01T02:59:59Z'))).toBe('2026-10-31'))
++  it('calcula 28 e 56 dias inclusivos e o mês', () => {
++    expect(periodo('4', '2026-11-01')).toEqual({ de: '2026-10-05', ate: '2026-11-01' })
++    expect(periodo('8', '2026-11-01')).toEqual({ de: '2026-09-07', ate: '2026-11-01' })
++    expect(periodo('mes', '2026-11-07')).toEqual({ de: '2026-11-01', ate: '2026-11-07' })
++  })
++  it('rejeita datas inexistentes, futuras, invertidas e mais de 366 dias', () => {
++    for (const [de, ate] of [['2026-02-30', '2026-03-02'], ['2026-11-02', '2026-11-01'], ['2026-01-01', '2027-01-03']]) expect(validarPeriodo(de!, ate!, '2027-12-31')).not.toBe('')
++    expect(validarPeriodo('2026-01-01', '2026-11-08', '2026-11-07')).not.toBe('')
++    expect(validarPeriodo('2024-01-01', '2024-12-31', '2026-11-07')).toBe('')
++    expect(rotuloDia('2026-11-02')).toBe('02/11')
++  })
++})
+diff --git a/apps/web/src/pages/equipe/periodo-indicadores.ts b/apps/web/src/pages/equipe/periodo-indicadores.ts
+new file mode 100644
+index 0000000..37f3edb
+--- /dev/null
++++ b/apps/web/src/pages/equipe/periodo-indicadores.ts
+@@ -0,0 +1,20 @@
++export function hojeRecife(agora = new Date()) {
++  const partes = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Recife', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(agora)
++  const parte = (nome: string) => partes.find((p) => p.type === nome)!.value
++  return `${parte('year')}-${parte('month')}-${parte('day')}`
++}
++export const rotuloDia = (dia: string) => `${dia.slice(8, 10)}/${dia.slice(5, 7)}`
++export function periodo(tipo: string, hoje = hojeRecife()) {
++  const fim = new Date(`${hoje}T12:00:00Z`)
++  if (tipo === 'mes') return { de: `${hoje.slice(0, 7)}-01`, ate: hoje }
++  fim.setUTCDate(fim.getUTCDate() - (tipo === '8' ? 55 : 27))
++  return { de: fim.toISOString().slice(0, 10), ate: hoje }
++}
++export function validarPeriodo(de: string, ate: string, hoje = hojeRecife()) {
++  const valida = (d: string) => /^\d{4}-\d{2}-\d{2}$/.test(d) && Number.isFinite(Date.parse(d)) && new Date(d).toISOString().slice(0, 10) === d
++  if (!valida(de) || !valida(ate)) return 'Informe datas válidas.'
++  if (de >= ate) return 'A data inicial deve ser anterior à final.'
++  if (ate > hoje) return 'O período deve terminar até hoje.'
++  if ((Date.parse(ate) - Date.parse(de)) / 86400000 >= 366) return 'Escolha um período de até 366 dias.'
++  return ''
++}
+diff --git a/apps/web/src/shared/api/generated/schema.d.ts b/apps/web/src/shared/api/generated/schema.d.ts
+index 9f8a6fd..3743901 100644
+--- a/apps/web/src/shared/api/generated/schema.d.ts
++++ b/apps/web/src/shared/api/generated/schema.d.ts
+@@ -1,13 +1,16 @@
+ export interface paths {
+-    "/api/v1/health": {
++    "/api/v1/admin/filas": {
+         parameters: {
+             query?: never;
+             header?: never;
+             path?: never;
+             cookie?: never;
+         };
+-        /** Health */
+-        get: operations["health_api_v1_health_get"];
++        /**
++         * Listar Filas
++         * @description Todas as filas, com unidade e especialidade, para a tela de atribuição.
++         */
++        get: operations["listar_filas_api_v1_admin_filas_get"];
+         put?: never;
+         post?: never;
+         delete?: never;
+@@ -16,27 +19,32 @@ export interface paths {
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/auth/registro": {
++    "/api/v1/admin/usuarios": {
+         parameters: {
+             query?: never;
+             header?: never;
+             path?: never;
+             cookie?: never;
+         };
+-        get?: never;
++        /**
++         * Listar Usuarios
++         * @description Contas da equipe (sem pacientes), com as filas e unidades atribuídas.
++         */
++        get: operations["listar_usuarios_api_v1_admin_usuarios_get"];
+         put?: never;
+         /**
+-         * Registrar
+-         * @description UC-001. CPF, cartão do SUS ou e-mail já cadastrados dão o mesmo 409 genérico (AM-005).
++         * Criar Usuario
++         * @description Cria ATENDENTE, GESTOR ou ADMIN com senha temporária forte, devolvida só aqui. A pessoa
++         *     precisa trocá-la no primeiro acesso. GESTOR sem unidade exige `confirmar_visao_central`.
+          */
+-        post: operations["registrar_api_v1_auth_registro_post"];
++        post: operations["criar_usuario_api_v1_admin_usuarios_post"];
+         delete?: never;
+         options?: never;
+         head?: never;
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/auth/login": {
++    "/api/v1/admin/usuarios/{usuario_id}/filas": {
+         parameters: {
+             query?: never;
+             header?: never;
+@@ -44,19 +52,19 @@ export interface paths {
+             cookie?: never;
+         };
+         get?: never;
+-        put?: never;
+         /**
+-         * Login
+-         * @description CPF (paciente) ou e-mail (equipe). Inexistente, senha errada e suspenso respondem igual.
++         * Atribuir Filas
++         * @description Substitui as filas do ATENDENTE (RF-035). Outro papel → 409.
+          */
+-        post: operations["login_api_v1_auth_login_post"];
++        put: operations["atribuir_filas_api_v1_admin_usuarios__usuario_id__filas_put"];
++        post?: never;
+         delete?: never;
+         options?: never;
+         head?: never;
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/auth/trocar-senha": {
++    "/api/v1/admin/usuarios/{usuario_id}/reativar": {
+         parameters: {
+             query?: never;
+             header?: never;
+@@ -66,19 +74,17 @@ export interface paths {
+         get?: never;
+         put?: never;
+         /**
+-         * Trocar Senha
+-         * @description Qualquer usuário autenticado. Zera `senha_temporaria` e revoga as outras sessões; a
+-         *     atual continua. Senha atual errada conta no limite do login (AM-020), por usuário e por IP,
+-         *     e o excesso responde 429 sem revogar nada.
++         * Reativar
++         * @description Volta a ATIVO. `suspenso_em` e `motivo_suspensao` ficam como registro (ADR-028).
+          */
+-        post: operations["trocar_senha_api_v1_auth_trocar_senha_post"];
++        post: operations["reativar_api_v1_admin_usuarios__usuario_id__reativar_post"];
+         delete?: never;
+         options?: never;
+         head?: never;
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/auth/refresh": {
++    "/api/v1/admin/usuarios/{usuario_id}/redefinir-senha": {
+         parameters: {
+             query?: never;
+             header?: never;
+@@ -88,20 +94,17 @@ export interface paths {
+         get?: never;
+         put?: never;
+         /**
+-         * Renovar
+-         * @description Rotação: o token usado é revogado e outro da mesma família é emitido. Reuso de um token
+-         *     já revogado indica roubo e revoga a família inteira, exceto dentro da tolerância
+-         *     (REFRESH_TOLERANCIA_S): aí é outra aba renovando junto e ganha um token da mesma família.
+-         *     Só uma reapresentação por token cabe na tolerância; a segunda revoga a família.
++         * Redefinir Senha
++         * @description Nova senha temporária (devolvida uma vez) e revogação de todas as sessões do usuário.
+          */
+-        post: operations["renovar_api_v1_auth_refresh_post"];
++        post: operations["redefinir_senha_api_v1_admin_usuarios__usuario_id__redefinir_senha_post"];
+         delete?: never;
+         options?: never;
+         head?: never;
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/auth/logout": {
++    "/api/v1/admin/usuarios/{usuario_id}/suspender": {
+         parameters: {
+             query?: never;
+             header?: never;
+@@ -111,29 +114,31 @@ export interface paths {
+         get?: never;
+         put?: never;
+         /**
+-         * Logout
+-         * @description Revoga a família do refresh token e apaga os cookies. Idempotente: 204 mesmo sem sessão.
++         * Suspender
++         * @description Grava a suspensão e revoga todas as sessões do usuário. O access token que ainda não
++         *     venceu deixa de valer na próxima requisição, porque `usuario_da_sessao` relê a situação.
+          */
+-        post: operations["logout_api_v1_auth_logout_post"];
++        post: operations["suspender_api_v1_admin_usuarios__usuario_id__suspender_post"];
+         delete?: never;
+         options?: never;
+         head?: never;
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/me": {
++    "/api/v1/admin/usuarios/{usuario_id}/unidades": {
+         parameters: {
+             query?: never;
+             header?: never;
+             path?: never;
+             cookie?: never;
+         };
++        get?: never;
+         /**
+-         * Eu
+-         * @description Dados do usuário logado. A equipe recebe também as filas do seu escopo (ADR-025).
++         * Atribuir Unidades
++         * @description Substitui as unidades do GESTOR (RF-035). Outro papel → 409. Lista vazia faz o gestor
++         *     ver a central inteira (ADR-025) e exige `confirmar_visao_central: true`.
+          */
+-        get: operations["eu_api_v1_me_get"];
+-        put?: never;
++        put: operations["atribuir_unidades_api_v1_admin_usuarios__usuario_id__unidades_put"];
+         post?: never;
+         delete?: never;
+         options?: never;
+@@ -141,32 +146,27 @@ export interface paths {
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/admin/usuarios": {
++    "/api/v1/agendamentos/{agendamento_id}/confirmar": {
+         parameters: {
+             query?: never;
+             header?: never;
+             path?: never;
+             cookie?: never;
+         };
+-        /**
+-         * Listar Usuarios
+-         * @description Contas da equipe (sem pacientes), com as filas e unidades atribuídas.
+-         */
+-        get: operations["listar_usuarios_api_v1_admin_usuarios_get"];
++        get?: never;
+         put?: never;
+         /**
+-         * Criar Usuario
+-         * @description Cria ATENDENTE, GESTOR ou ADMIN com senha temporária forte, devolvida só aqui. A pessoa
+-         *     precisa trocá-la no primeiro acesso. GESTOR sem unidade exige `confirmar_visao_central`.
++         * Confirmar
++         * @description UC-004: PROPOSTO → CONFIRMADO e solicitação AGENDADA, só antes de `expira_em`.
+          */
+-        post: operations["criar_usuario_api_v1_admin_usuarios_post"];
++        post: operations["confirmar_api_v1_agendamentos__agendamento_id__confirmar_post"];
+         delete?: never;
+         options?: never;
+         head?: never;
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/admin/usuarios/{usuario_id}/redefinir-senha": {
++    "/api/v1/agendamentos/{agendamento_id}/recusar": {
+         parameters: {
+             query?: never;
+             header?: never;
+@@ -176,17 +176,17 @@ export interface paths {
+         get?: never;
+         put?: never;
+         /**
+-         * Redefinir Senha
+-         * @description Nova senha temporária (devolvida uma vez) e revogação de todas as sessões do usuário.
++         * Recusar
++         * @description UC-005 ("esta data não serve"): só PROPOSTO. A vaga fica livre para o próximo.
+          */
+-        post: operations["redefinir_senha_api_v1_admin_usuarios__usuario_id__redefinir_senha_post"];
++        post: operations["recusar_api_v1_agendamentos__agendamento_id__recusar_post"];
+         delete?: never;
+         options?: never;
+         head?: never;
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/admin/usuarios/{usuario_id}/filas": {
++    "/api/v1/auth/login": {
+         parameters: {
+             query?: never;
+             header?: never;
+@@ -194,19 +194,19 @@ export interface paths {
+             cookie?: never;
+         };
+         get?: never;
++        put?: never;
+         /**
+-         * Atribuir Filas
+-         * @description Substitui as filas do ATENDENTE (RF-035). Outro papel → 409.
++         * Login
++         * @description CPF (paciente) ou e-mail (equipe). Inexistente, senha errada e suspenso respondem igual.
+          */
+-        put: operations["atribuir_filas_api_v1_admin_usuarios__usuario_id__filas_put"];
+-        post?: never;
++        post: operations["login_api_v1_auth_login_post"];
+         delete?: never;
+         options?: never;
+         head?: never;
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/admin/usuarios/{usuario_id}/unidades": {
++    "/api/v1/auth/logout": {
+         parameters: {
+             query?: never;
+             header?: never;
+@@ -214,40 +214,42 @@ export interface paths {
+             cookie?: never;
+         };
+         get?: never;
++        put?: never;
+         /**
+-         * Atribuir Unidades
+-         * @description Substitui as unidades do GESTOR (RF-035). Outro papel → 409. Lista vazia faz o gestor
+-         *     ver a central inteira (ADR-025) e exige `confirmar_visao_central: true`.
++         * Logout
++         * @description Revoga a família do refresh token e apaga os cookies. Idempotente: 204 mesmo sem sessão.
+          */
+-        put: operations["atribuir_unidades_api_v1_admin_usuarios__usuario_id__unidades_put"];
+-        post?: never;
++        post: operations["logout_api_v1_auth_logout_post"];
+         delete?: never;
+         options?: never;
+         head?: never;
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/admin/filas": {
++    "/api/v1/auth/refresh": {
+         parameters: {
+             query?: never;
+             header?: never;
+             path?: never;
+             cookie?: never;
+         };
++        get?: never;
++        put?: never;
+         /**
+-         * Listar Filas
+-         * @description Todas as filas, com unidade e especialidade, para a tela de atribuição.
++         * Renovar
++         * @description Rotação: o token usado é revogado e outro da mesma família é emitido. Reuso de um token
++         *     já revogado indica roubo e revoga a família inteira, exceto dentro da tolerância
++         *     (REFRESH_TOLERANCIA_S): aí é outra aba renovando junto e ganha um token da mesma família.
++         *     Só uma reapresentação por token cabe na tolerância; a segunda revoga a família.
+          */
+-        get: operations["listar_filas_api_v1_admin_filas_get"];
+-        put?: never;
+-        post?: never;
++        post: operations["renovar_api_v1_auth_refresh_post"];
+         delete?: never;
+         options?: never;
+         head?: never;
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/admin/usuarios/{usuario_id}/suspender": {
++    "/api/v1/auth/registro": {
+         parameters: {
+             query?: never;
+             header?: never;
+@@ -257,18 +259,17 @@ export interface paths {
+         get?: never;
+         put?: never;
+         /**
+-         * Suspender
+-         * @description Grava a suspensão e revoga todas as sessões do usuário. O access token que ainda não
+-         *     venceu deixa de valer na próxima requisição, porque `usuario_da_sessao` relê a situação.
++         * Registrar
++         * @description UC-001. CPF, cartão do SUS ou e-mail já cadastrados dão o mesmo 409 genérico (AM-005).
+          */
+-        post: operations["suspender_api_v1_admin_usuarios__usuario_id__suspender_post"];
++        post: operations["registrar_api_v1_auth_registro_post"];
+         delete?: never;
+         options?: never;
+         head?: never;
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/admin/usuarios/{usuario_id}/reativar": {
++    "/api/v1/auth/trocar-senha": {
+         parameters: {
+             query?: never;
+             header?: never;
+@@ -278,17 +279,19 @@ export interface paths {
+         get?: never;
+         put?: never;
+         /**
+-         * Reativar
+-         * @description Volta a ATIVO. `suspenso_em` e `motivo_suspensao` ficam como registro (ADR-028).
++         * Trocar Senha
++         * @description Qualquer usuário autenticado. Zera `senha_temporaria` e revoga as outras sessões; a
++         *     atual continua. Senha atual errada conta no limite do login (AM-020), por usuário e por IP,
++         *     e o excesso responde 429 sem revogar nada.
+          */
+-        post: operations["reativar_api_v1_admin_usuarios__usuario_id__reativar_post"];
++        post: operations["trocar_senha_api_v1_auth_trocar_senha_post"];
+         delete?: never;
+         options?: never;
+         head?: never;
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/filas": {
++    "/api/v1/avisos": {
+         parameters: {
+             query?: never;
+             header?: never;
+@@ -296,11 +299,10 @@ export interface paths {
+             cookie?: never;
+         };
+         /**
+-         * Listar Filas
+-         * @description Filas ativas, com a elegibilidade do paciente (RN-017). `total` é o das filas ativas,
+-         *     nunca contagem de pessoas.
++         * Listar
++         * @description Mais recentes primeiro.
+          */
+-        get: operations["listar_filas_api_v1_filas_get"];
++        get: operations["listar_api_v1_avisos_get"];
+         put?: never;
+         post?: never;
+         delete?: never;
+@@ -309,7 +311,7 @@ export interface paths {
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/filas/{fila_id}": {
++    "/api/v1/avisos/contagem": {
+         parameters: {
+             query?: never;
+             header?: never;
+@@ -317,10 +319,10 @@ export interface paths {
+             cookie?: never;
+         };
+         /**
+-         * Detalhar Fila
+-         * @description Fila e as perguntas de origem PACIENTE do protocolo, sem peso nem pontos.
++         * Contagem
++         * @description Para o sino do menu.
+          */
+-        get: operations["detalhar_fila_api_v1_filas__fila_id__get"];
++        get: operations["contagem_api_v1_avisos_contagem_get"];
+         put?: never;
+         post?: never;
+         delete?: never;
+@@ -329,53 +331,44 @@ export interface paths {
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/solicitacoes": {
++    "/api/v1/avisos/lidos": {
+         parameters: {
+             query?: never;
+             header?: never;
+             path?: never;
+             cookie?: never;
+         };
+-        /**
+-         * Listar
+-         * @description Solicitações do paciente. `encerradas` alimenta o "Histórico de atendimentos".
+-         *
+-         *     Uma consulta traz o agendamento ativo de cada item (sem N+1), mais a contagem do filtro.
+-         */
+-        get: operations["listar_api_v1_solicitacoes_get"];
++        get?: never;
+         put?: never;
+-        /**
+-         * Criar
+-         * @description UC-002: cria a solicitação em EM_ANALISE, com a nota das respostas (RN-006).
+-         */
+-        post: operations["criar_api_v1_solicitacoes_post"];
++        /** Marcar Todos */
++        post: operations["marcar_todos_api_v1_avisos_lidos_post"];
+         delete?: never;
+         options?: never;
+         head?: never;
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/solicitacoes/{solicitacao_id}": {
++    "/api/v1/avisos/{aviso_id}/lido": {
+         parameters: {
+             query?: never;
+             header?: never;
+             path?: never;
+             cookie?: never;
+         };
++        get?: never;
++        put?: never;
+         /**
+-         * Detalhar
+-         * @description Status, fila e linha do tempo só com os eventos visíveis ao paciente (RN-007).
++         * Marcar Lido
++         * @description Idempotente: já lido continua com a data da primeira leitura.
+          */
+-        get: operations["detalhar_api_v1_solicitacoes__solicitacao_id__get"];
+-        put?: never;
+-        post?: never;
++        post: operations["marcar_lido_api_v1_avisos__aviso_id__lido_post"];
+         delete?: never;
+         options?: never;
+         head?: never;
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/solicitacoes/{solicitacao_id}/cancelar": {
++    "/api/v1/equipe/agendamentos/{agendamento_id}/presenca": {
+         parameters: {
+             query?: never;
+             header?: never;
+@@ -385,61 +378,60 @@ export interface paths {
+         get?: never;
+         put?: never;
+         /**
+-         * Cancelar
+-         * @description Cancelamento ("não vou precisar"): EM_ANALISE, NA_FILA, EM_PROPOSTA ou AGENDADA.
+-         *
+-         *     Com proposta ou consulta ativa, o agendamento é cancelado junto, só antes do início da
+-         *     vaga; a vaga fica livre e o Worker a oferece ao próximo (RN-005). Outros estados → 409.
+-         *     Travas: solicitação, depois agendamento (a vaga só é lida).
++         * Presenca
++         * @description UC-008. Compareceu: a partir do início da vaga, REALIZADO e solicitação ATENDIDA.
++         *     Faltou: só depois da tolerância (RN-013), FALTOU e solicitação no fim da fila (RN-014).
++         *     Só de CONFIRMADO; fora do escopo → 404.
+          */
+-        post: operations["cancelar_api_v1_solicitacoes__solicitacao_id__cancelar_post"];
++        post: operations["presenca_api_v1_equipe_agendamentos__agendamento_id__presenca_post"];
+         delete?: never;
+         options?: never;
+         head?: never;
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/agendamentos/{agendamento_id}/confirmar": {
++    "/api/v1/equipe/filas": {
+         parameters: {
+             query?: never;
+             header?: never;
+             path?: never;
+             cookie?: never;
+         };
+-        get?: never;
+-        put?: never;
+         /**
+-         * Confirmar
+-         * @description UC-004: PROPOSTO → CONFIRMADO e solicitação AGENDADA, só antes de `expira_em`.
++         * Listar Filas
++         * @description Filas do escopo, com a contagem de solicitações por status.
+          */
+-        post: operations["confirmar_api_v1_agendamentos__agendamento_id__confirmar_post"];
++        get: operations["listar_filas_api_v1_equipe_filas_get"];
++        put?: never;
++        post?: never;
+         delete?: never;
+         options?: never;
+         head?: never;
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/agendamentos/{agendamento_id}/recusar": {
++    "/api/v1/equipe/filas/{fila_id}/agendamentos": {
+         parameters: {
+             query?: never;
+             header?: never;
+             path?: never;
+             cookie?: never;
+         };
+-        get?: never;
+-        put?: never;
+         /**
+-         * Recusar
+-         * @description UC-005 ("esta data não serve"): só PROPOSTO. A vaga fica livre para o próximo.
++         * Agendamentos Do Dia
++         * @description Agenda do dia (UC-008): hora, paciente abreviado, status e se a presença foi registrada.
++         *     `data` é o dia em Recife. Leitura auditada.
+          */
+-        post: operations["recusar_api_v1_agendamentos__agendamento_id__recusar_post"];
++        get: operations["agendamentos_do_dia_api_v1_equipe_filas__fila_id__agendamentos_get"];
++        put?: never;
++        post?: never;
+         delete?: never;
+         options?: never;
+         head?: never;
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/equipe/filas": {
++    "/api/v1/equipe/filas/{fila_id}/criterios": {
+         parameters: {
+             query?: never;
+             header?: never;
+@@ -447,10 +439,12 @@ export interface paths {
+             cookie?: never;
+         };
+         /**
+-         * Listar Filas
+-         * @description Filas do escopo, com a contagem de solicitações por status.
++         * Criterios Da Equipe
++         * @description Critérios ativos de origem REGULACAO e EQUIPE da fila, para montar o formulário de
++         *     `PUT /equipe/solicitacoes/{id}/respostas`. Sem peso, fator nem pontos: a matriz de acesso
++         *     não os libera para a leitura da equipe. Sem auditoria: não traz dado de paciente.
+          */
+-        get: operations["listar_filas_api_v1_equipe_filas_get"];
++        get: operations["criterios_da_equipe_api_v1_equipe_filas__fila_id__criterios_get"];
+         put?: never;
+         post?: never;
+         delete?: never;
+@@ -480,7 +474,7 @@ export interface paths {
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/equipe/solicitacoes/{solicitacao_id}": {
++    "/api/v1/equipe/filas/{fila_id}/vagas": {
+         parameters: {
+             query?: never;
+             header?: never;
+@@ -488,10 +482,11 @@ export interface paths {
+             cookie?: never;
+         };
+         /**
+-         * Detalhar
+-         * @description Detalhe com respostas (critério, valor, pontos), nota e histórico completo.
++         * Painel De Vagas
++         * @description Vagas de `de` a `ate` (dias em Recife, inclusivos, até 31 dias) com a situação
++         *     derivada por `situacao_da_vaga()`. Nada é gravado. Leitura auditada.
+          */
+-        get: operations["detalhar_api_v1_equipe_solicitacoes__solicitacao_id__get"];
++        get: operations["painel_de_vagas_api_v1_equipe_filas__fila_id__vagas_get"];
+         put?: never;
+         post?: never;
+         delete?: never;
+@@ -500,7 +495,7 @@ export interface paths {
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/equipe/filas/{fila_id}/criterios": {
++    "/api/v1/equipe/indicadores": {
+         parameters: {
+             query?: never;
+             header?: never;
+@@ -508,12 +503,31 @@ export interface paths {
+             cookie?: never;
+         };
+         /**
+-         * Criterios Da Equipe
+-         * @description Critérios ativos de origem REGULACAO e EQUIPE da fila, para montar o formulário de
+-         *     `PUT /equipe/solicitacoes/{id}/respostas`. Sem peso, fator nem pontos: a matriz de acesso
+-         *     não os libera para a leitura da equipe. Sem auditoria: não traz dado de paciente.
++         * Indicadores
++         * @description Indicadores de `de` a `ate` (dias em Recife, inclusivos, até 366 dias), com totais,
++         *     série semanal e a fila atual. `unidade_id` e `fila_id` restringem o escopo do usuário.
+          */
+-        get: operations["criterios_da_equipe_api_v1_equipe_filas__fila_id__criterios_get"];
++        get: operations["indicadores_api_v1_equipe_indicadores_get"];
++        put?: never;
++        post?: never;
++        delete?: never;
++        options?: never;
++        head?: never;
++        patch?: never;
++        trace?: never;
++    };
++    "/api/v1/equipe/solicitacoes/{solicitacao_id}": {
++        parameters: {
++            query?: never;
++            header?: never;
++            path?: never;
++            cookie?: never;
++        };
++        /**
++         * Detalhar
++         * @description Detalhe com respostas (critério, valor, pontos), nota e histórico completo.
++         */
++        get: operations["detalhar_api_v1_equipe_solicitacoes__solicitacao_id__get"];
+         put?: never;
+         post?: never;
+         delete?: never;
+@@ -564,7 +578,7 @@ export interface paths {
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/equipe/filas/{fila_id}/agendamentos": {
++    "/api/v1/filas": {
+         parameters: {
+             query?: never;
+             header?: never;
+@@ -572,11 +586,11 @@ export interface paths {
+             cookie?: never;
+         };
+         /**
+-         * Agendamentos Do Dia
+-         * @description Agenda do dia (UC-008): hora, paciente abreviado, status e se a presença foi registrada.
+-         *     `data` é o dia em Recife. Leitura auditada.
++         * Listar Filas
++         * @description Filas ativas, com a elegibilidade do paciente (RN-017). `total` é o das filas ativas,
++         *     nunca contagem de pessoas.
+          */
+-        get: operations["agendamentos_do_dia_api_v1_equipe_filas__fila_id__agendamentos_get"];
++        get: operations["listar_filas_api_v1_filas_get"];
+         put?: never;
+         post?: never;
+         delete?: never;
+@@ -585,41 +599,35 @@ export interface paths {
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/equipe/agendamentos/{agendamento_id}/presenca": {
++    "/api/v1/filas/{fila_id}": {
+         parameters: {
+             query?: never;
+             header?: never;
+             path?: never;
+             cookie?: never;
+         };
+-        get?: never;
+-        put?: never;
+         /**
+-         * Presenca
+-         * @description UC-008. Compareceu: a partir do início da vaga, REALIZADO e solicitação ATENDIDA.
+-         *     Faltou: só depois da tolerância (RN-013), FALTOU e solicitação no fim da fila (RN-014).
+-         *     Só de CONFIRMADO; fora do escopo → 404.
++         * Detalhar Fila
++         * @description Fila e as perguntas de origem PACIENTE do protocolo, sem peso nem pontos.
+          */
+-        post: operations["presenca_api_v1_equipe_agendamentos__agendamento_id__presenca_post"];
++        get: operations["detalhar_fila_api_v1_filas__fila_id__get"];
++        put?: never;
++        post?: never;
+         delete?: never;
+         options?: never;
+         head?: never;
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/equipe/filas/{fila_id}/vagas": {
++    "/api/v1/health": {
+         parameters: {
+             query?: never;
+             header?: never;
+             path?: never;
+             cookie?: never;
+         };
+-        /**
+-         * Painel De Vagas
+-         * @description Vagas de `de` a `ate` (dias em Recife, inclusivos, até 31 dias) com a situação
+-         *     derivada por `situacao_da_vaga()`. Nada é gravado. Leitura auditada.
+-         */
+-        get: operations["painel_de_vagas_api_v1_equipe_filas__fila_id__vagas_get"];
++        /** Health */
++        get: operations["health_api_v1_health_get"];
+         put?: never;
+         post?: never;
+         delete?: never;
+@@ -628,7 +636,7 @@ export interface paths {
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/equipe/indicadores": {
++    "/api/v1/me": {
+         parameters: {
+             query?: never;
+             header?: never;
+@@ -636,11 +644,10 @@ export interface paths {
+             cookie?: never;
+         };
+         /**
+-         * Indicadores
+-         * @description Indicadores de `de` a `ate` (dias em Recife, inclusivos, até 366 dias), com totais,
+-         *     série semanal e a fila atual. `unidade_id` e `fila_id` restringem o escopo do usuário.
++         * Eu
++         * @description Dados do usuário logado. A equipe recebe também as filas do seu escopo (ADR-025).
+          */
+-        get: operations["indicadores_api_v1_equipe_indicadores_get"];
++        get: operations["eu_api_v1_me_get"];
+         put?: never;
+         post?: never;
+         delete?: never;
+@@ -649,7 +656,7 @@ export interface paths {
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/avisos": {
++    "/api/v1/solicitacoes": {
+         parameters: {
+             query?: never;
+             header?: never;
+@@ -658,18 +665,24 @@ export interface paths {
+         };
+         /**
+          * Listar
+-         * @description Mais recentes primeiro.
++         * @description Solicitações do paciente. `encerradas` alimenta o "Histórico de atendimentos".
++         *
++         *     Uma consulta traz o agendamento ativo de cada item (sem N+1), mais a contagem do filtro.
+          */
+-        get: operations["listar_api_v1_avisos_get"];
++        get: operations["listar_api_v1_solicitacoes_get"];
+         put?: never;
+-        post?: never;
++        /**
++         * Criar
++         * @description UC-002: cria a solicitação em EM_ANALISE, com a nota das respostas (RN-006).
++         */
++        post: operations["criar_api_v1_solicitacoes_post"];
+         delete?: never;
+         options?: never;
+         head?: never;
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/avisos/contagem": {
++    "/api/v1/solicitacoes/{solicitacao_id}": {
+         parameters: {
+             query?: never;
+             header?: never;
+@@ -677,10 +690,10 @@ export interface paths {
+             cookie?: never;
+         };
+         /**
+-         * Contagem
+-         * @description Para o sino do menu.
++         * Detalhar
++         * @description Status, fila e linha do tempo só com os eventos visíveis ao paciente (RN-007).
+          */
+-        get: operations["contagem_api_v1_avisos_contagem_get"];
++        get: operations["detalhar_api_v1_solicitacoes__solicitacao_id__get"];
+         put?: never;
+         post?: never;
+         delete?: never;
+@@ -689,24 +702,7 @@ export interface paths {
+         patch?: never;
+         trace?: never;
+     };
+-    "/api/v1/avisos/lidos": {
+-        parameters: {
+-            query?: never;
+-            header?: never;
+-            path?: never;
+-            cookie?: never;
+-        };
+-        get?: never;
+-        put?: never;
+-        /** Marcar Todos */
+-        post: operations["marcar_todos_api_v1_avisos_lidos_post"];
+-        delete?: never;
+-        options?: never;
+-        head?: never;
+-        patch?: never;
+-        trace?: never;
+-    };
+-    "/api/v1/avisos/{aviso_id}/lido": {
++    "/api/v1/solicitacoes/{solicitacao_id}/cancelar": {
+         parameters: {
+             query?: never;
+             header?: never;
+@@ -716,10 +712,14 @@ export interface paths {
+         get?: never;
+         put?: never;
+         /**
+-         * Marcar Lido
+-         * @description Idempotente: já lido continua com a data da primeira leitura.
++         * Cancelar
++         * @description Cancelamento ("não vou precisar"): EM_ANALISE, NA_FILA, EM_PROPOSTA ou AGENDADA.
++         *
++         *     Com proposta ou consulta ativa, o agendamento é cancelado junto, só antes do início da
++         *     vaga; a vaga fica livre e o Worker a oferece ao próximo (RN-005). Outros estados → 409.
++         *     Travas: solicitação, depois agendamento (a vaga só é lida).
+          */
+-        post: operations["marcar_lido_api_v1_avisos__aviso_id__lido_post"];
++        post: operations["cancelar_api_v1_solicitacoes__solicitacao_id__cancelar_post"];
+         delete?: never;
+         options?: never;
+         head?: never;
+@@ -754,110 +754,110 @@ export interface components {
+         /** AgendamentoDoDia */
+         AgendamentoDoDia: {
+             /**
+-             * Id
+-             * Format: uuid
++             * Fim
++             * Format: date-time
+              */
+-            id: string;
++            fim: string;
+             /**
+-             * Solicitacao Id
++             * Id
+              * Format: uuid
+              */
+-            solicitacao_id: string;
++            id: string;
+             /**
+              * Inicio
+              * Format: date-time
+              */
+             inicio: string;
+-            /**
+-             * Fim
+-             * Format: date-time
+-             */
+-            fim: string;
+-            /** Profissional */
+-            profissional: string;
+             /** Paciente Nome */
+             paciente_nome: string;
+-            status: components["schemas"]["StatusAgendamento"];
+             /** Presenca Registrada */
+             presenca_registrada: boolean;
++            /** Profissional */
++            profissional: string;
++            /**
++             * Solicitacao Id
++             * Format: uuid
++             */
++            solicitacao_id: string;
++            status: components["schemas"]["StatusAgendamento"];
+         };
+         /** AgendamentoPaciente */
+         AgendamentoPaciente: {
++            /** Endereco */
++            endereco: string | null;
++            /** Expira Em */
++            expira_em: string | null;
++            /**
++             * Fim
++             * Format: date-time
++             */
++            fim: string;
+             /**
+              * Id
+              * Format: uuid
+              */
+             id: string;
+-            /**
+-             * Status
+-             * @enum {string}
+-             */
+-            status: "PROPOSTO" | "CONFIRMADO";
+             /**
+              * Inicio
+              * Format: date-time
+              */
+             inicio: string;
+-            /** Expira Em */
+-            expira_em: string | null;
+-            unidade: components["schemas"]["UnidadeSaida"];
+             /** Profissional */
+             profissional: string;
+             /**
+-             * Fim
+-             * Format: date-time
++             * Status
++             * @enum {string}
+              */
+-            fim: string;
+-            /** Endereco */
+-            endereco: string | null;
++            status: "PROPOSTO" | "CONFIRMADO";
++            unidade: components["schemas"]["UnidadeSaida"];
+         };
+         /**
+          * AgendamentoResumo
+          * @description Proposta (com `expira_em`) ou consulta confirmada. Horários no fuso de Recife.
+          */
+         AgendamentoResumo: {
++            /** Expira Em */
++            expira_em: string | null;
+             /**
+              * Id
+              * Format: uuid
+              */
+             id: string;
+-            /**
+-             * Status
+-             * @enum {string}
+-             */
+-            status: "PROPOSTO" | "CONFIRMADO";
+             /**
+              * Inicio
+              * Format: date-time
+              */
+             inicio: string;
+-            /** Expira Em */
+-            expira_em: string | null;
+-            unidade: components["schemas"]["UnidadeSaida"];
+             /** Profissional */
+             profissional: string;
++            /**
++             * Status
++             * @enum {string}
++             */
++            status: "PROPOSTO" | "CONFIRMADO";
++            unidade: components["schemas"]["UnidadeSaida"];
+         };
+         /** AvisoSaida */
+         AvisoSaida: {
+-            /**
+-             * Id
+-             * Format: uuid
+-             */
+-            id: string;
+-            tipo: components["schemas"]["TipoAviso"];
+-            /** Titulo */
+-            titulo: string;
+             /** Corpo */
+             corpo: string;
+-            /** Solicitacao Id */
+-            solicitacao_id: string | null;
+             /**
+              * Criado Em
+              * Format: date-time
+              */
+             criado_em: string;
++            /**
++             * Id
++             * Format: uuid
++             */
++            id: string;
+             /** Lido Em */
+             lido_em: string | null;
++            /** Solicitacao Id */
++            solicitacao_id: string | null;
++            tipo: components["schemas"]["TipoAviso"];
++            /** Titulo */
++            titulo: string;
+         };
+         /**
+          * CancelamentoEntrada
+@@ -887,43 +887,43 @@ export interface components {
+          * @description Pergunta que a equipe responde para montar o formulário. Sem peso, fator nem pontos.
+          */
+         CriterioEquipeSaida: {
++            /** Codigo */
++            codigo: string;
++            /** Descricao */
++            descricao: string;
++            /** Faixas */
++            faixas: components["schemas"]["FaixaCriterio"][] | null;
+             /**
+              * Id
+              * Format: uuid
+              */
+             id: string;
+-            /** Codigo */
+-            codigo: string;
+-            /** Descricao */
+-            descricao: string;
+-            tipo: components["schemas"]["TipoCriterio"];
++            /** Opcoes */
++            opcoes: string[] | null;
+             /**
+              * Origem
+              * @enum {string}
+              */
+             origem: "REGULACAO" | "EQUIPE";
+-            /** Opcoes */
+-            opcoes: string[] | null;
+-            /** Faixas */
+-            faixas: components["schemas"]["FaixaCriterio"][] | null;
++            tipo: components["schemas"]["TipoCriterio"];
+         };
+         /**
+          * CriterioPacienteSaida
+          * @description Sem peso, fatores nem pontos: o paciente só vê a pergunta.
+          */
+         CriterioPacienteSaida: {
++            /** Codigo */
++            codigo: string;
++            /** Descricao */
++            descricao: string;
+             /**
+              * Id
+              * Format: uuid
+              */
+             id: string;
+-            /** Codigo */
+-            codigo: string;
+-            /** Descricao */
+-            descricao: string;
+-            tipo: components["schemas"]["TipoCriterio"];
+             /** Opcoes */
+             opcoes: string[] | null;
++            tipo: components["schemas"]["TipoCriterio"];
+         };
+         /** ErroDeCampo */
+         ErroDeCampo: {
+@@ -962,42 +962,41 @@ export interface components {
+          *     é `null` no paciente; na equipe, `filas` traz o escopo (ADR-025), `[]` se não houver.
+          */
+         EuSaida: {
++            /** Filas */
++            filas: string[] | null;
+             /**
+              * Id
+              * Format: uuid
+              */
+             id: string;
+-            papel: components["schemas"]["Papel"];
+             /** Nome */
+             nome: string | null;
+-            /** Filas */
+-            filas: string[] | null;
++            papel: components["schemas"]["Papel"];
+             /** Trocar Senha */
+             trocar_senha?: true | null;
+         };
+         /** EventoEquipe */
+         EventoEquipe: {
+-            tipo: components["schemas"]["TipoEventoLinhaDoTempo"];
+-            status_anterior: components["schemas"]["StatusSolicitacao"] | null;
+-            status_novo: components["schemas"]["StatusSolicitacao"] | null;
+-            /** Motivo */
+-            motivo: string | null;
+-            /** Visivel Paciente */
+-            visivel_paciente: boolean;
+             /** Ator Usuario Id */
+             ator_usuario_id: string | null;
+-            /**
++            /** Motivo */
++            motivo: string | null;
++            /**
+              * Ocorrido Em
+              * Format: date-time
+              */
+             ocorrido_em: string;
++            status_anterior: components["schemas"]["StatusSolicitacao"] | null;
++            status_novo: components["schemas"]["StatusSolicitacao"] | null;
++            tipo: components["schemas"]["TipoEventoLinhaDoTempo"];
++            /** Visivel Paciente */
++            visivel_paciente: boolean;
+         };
+         /**
+          * EventoPaciente
+          * @description Só o dia, sem hora: a hora de ENTROU_NA_FILA revelaria `data_entrada_fila` (ADR-007).
+          */
+         EventoPaciente: {
+-            tipo: components["schemas"]["TipoEventoLinhaDoTempo"];
+             /**
+              * Data
+              * Format: date
+@@ -1005,6 +1004,7 @@ export interface components {
+             data: string;
+             /** Motivo */
+             motivo: string | null;
++            tipo: components["schemas"]["TipoEventoLinhaDoTempo"];
+         };
+         /**
+          * FaixaCriterio
+@@ -1012,13 +1012,16 @@ export interface components {
+          *     com o protocolo.
+          */
+         FaixaCriterio: {
+-            /** Min */
+-            min?: number | null;
+             /** Max */
+             max?: number | null;
++            /** Min */
++            min?: number | null;
+         };
+         /** FilaAdmin */
+         FilaAdmin: {
++            /** Ativa */
++            ativa: boolean;
++            especialidade: components["schemas"]["EspecialidadeResumo"];
+             /**
+              * Id
+              * Format: uuid
+@@ -1026,33 +1029,38 @@ export interface components {
+             id: string;
+             /** Nome */
+             nome: string;
+-            /** Ativa */
+-            ativa: boolean;
+             unidade: components["schemas"]["UnidadeResumo"];
+-            especialidade: components["schemas"]["EspecialidadeResumo"];
+         };
+         /** FilaDetalheSaida */
+         FilaDetalheSaida: {
++            /** Criterios */
++            criterios: components["schemas"]["CriterioPacienteSaida"][];
++            /** Descricao Paciente */
++            descricao_paciente: string;
++            /** Elegivel */
++            elegivel: boolean;
++            especialidade: components["schemas"]["EspecialidadeSaida"];
+             /**
+              * Id
+              * Format: uuid
+              */
+             id: string;
++            /** Motivo Inelegivel */
++            motivo_inelegivel: string | null;
+             /** Nome */
+             nome: string;
+-            /** Descricao Paciente */
+-            descricao_paciente: string;
+             unidade: components["schemas"]["UnidadeSaida"];
+-            especialidade: components["schemas"]["EspecialidadeSaida"];
+-            /** Elegivel */
+-            elegivel: boolean;
+-            /** Motivo Inelegivel */
+-            motivo_inelegivel: string | null;
+-            /** Criterios */
+-            criterios: components["schemas"]["CriterioPacienteSaida"][];
+         };
+         /** FilaEquipeSaida */
+         FilaEquipeSaida: {
++            /** Ativa */
++            ativa: boolean;
++            /** Contagem Por Status */
++            contagem_por_status: {
++                [key: string]: number;
++            };
++            /** Especialidade */
++            especialidade: string;
+             /**
+              * Id
+              * Format: uuid
+@@ -1062,14 +1070,6 @@ export interface components {
+             nome: string;
+             /** Unidade Sigla */
+             unidade_sigla: string;
+-            /** Especialidade */
+-            especialidade: string;
+-            /** Ativa */
+-            ativa: boolean;
+-            /** Contagem Por Status */
+-            contagem_por_status: {
+-                [key: string]: number;
+-            };
+         };
+         /** FilaResumo */
+         FilaResumo: {
+@@ -1084,21 +1084,21 @@ export interface components {
+         };
+         /** FilaSaida */
+         FilaSaida: {
++            /** Descricao Paciente */
++            descricao_paciente: string;
++            /** Elegivel */
++            elegivel: boolean;
++            especialidade: components["schemas"]["EspecialidadeSaida"];
+             /**
+              * Id
+              * Format: uuid
+              */
+             id: string;
++            /** Motivo Inelegivel */
++            motivo_inelegivel: string | null;
+             /** Nome */
+             nome: string;
+-            /** Descricao Paciente */
+-            descricao_paciente: string;
+             unidade: components["schemas"]["UnidadeSaida"];
+-            especialidade: components["schemas"]["EspecialidadeSaida"];
+-            /** Elegivel */
+-            elegivel: boolean;
+-            /** Motivo Inelegivel */
+-            motivo_inelegivel: string | null;
+         };
+         /** FilasEntrada */
+         FilasEntrada: {
+@@ -1108,23 +1108,15 @@ export interface components {
+         /** IndicadoresSaida */
+         IndicadoresSaida: {
+             /**
+-             * De
++             * Ate
+              * Format: date
+              */
+-            de: string;
++            ate: string;
+             /**
+-             * Ate
++             * De
+              * Format: date
+              */
+-            ate: string;
+-            /** Unidade Id */
+-            unidade_id: string | null;
+-            /** Fila Id */
+-            fila_id: string | null;
+-            totais: components["schemas"]["Resumo"];
+-            /** Semanas */
+-            semanas: components["schemas"]["Semana"][];
+-            tempo_de_espera: components["schemas"]["TempoDeEspera"];
++            de: string;
+             /**
+              * Fila Atual
+              * @description Solicitações NA_FILA agora, por cor de risco. Não depende do período.
+@@ -1132,26 +1124,34 @@ export interface components {
+             fila_atual: {
+                 [key: string]: number;
+             };
++            /** Fila Id */
++            fila_id: string | null;
++            /** Semanas */
++            semanas: components["schemas"]["Semana"][];
++            tempo_de_espera: components["schemas"]["TempoDeEspera"];
++            totais: components["schemas"]["Resumo"];
++            /** Unidade Id */
++            unidade_id: string | null;
+         };
+         /** ItemPainel */
+         ItemPainel: {
++            classificacao_risco: components["schemas"]["ClassificacaoRisco"] | null;
++            /** Data Entrada Fila */
++            data_entrada_fila: string | null;
+             /**
+              * Id
+              * Format: uuid
+              */
+             id: string;
+-            status: components["schemas"]["StatusSolicitacao"];
+-            /** Posicao */
+-            posicao: number | null;
+-            classificacao_risco: components["schemas"]["ClassificacaoRisco"] | null;
+             /** Nota */
+             nota: number;
+-            /** Data Entrada Fila */
+-            data_entrada_fila: string | null;
+-            /** Paciente Nome */
+-            paciente_nome: string;
+             /** Paciente Cpf */
+             paciente_cpf: string;
++            /** Paciente Nome */
++            paciente_nome: string;
++            /** Posicao */
++            posicao: number | null;
++            status: components["schemas"]["StatusSolicitacao"];
+             ultima_mudanca: components["schemas"]["UltimaMudanca"] | null;
+         };
+         /** LoginEntrada */
+@@ -1173,12 +1173,12 @@ export interface components {
+          *     a pessoa à troca, porque o resto da API responde 403 até lá.
+          */
+         LoginSaida: {
+-            papel: components["schemas"]["Papel"];
+             /**
+              * Expira Em
+              * Format: date-time
+              */
+             expira_em: string;
++            papel: components["schemas"]["Papel"];
+             /** Trocar Senha */
+             trocar_senha?: true | null;
+         };
+@@ -1194,61 +1194,61 @@ export interface components {
+         OrigemCriterio: "PACIENTE" | "REGULACAO" | "EQUIPE";
+         /** PaginaAvisos */
+         PaginaAvisos: {
+-            /** Total */
+-            total: number;
+             /** Itens */
+             itens: components["schemas"]["AvisoSaida"][];
++            /** Total */
++            total: number;
+         };
+         /** PaginaFilas */
+         PaginaFilas: {
+-            /** Total */
+-            total: number;
+             /** Itens */
+             itens: components["schemas"]["FilaSaida"][];
++            /** Total */
++            total: number;
+         };
+         /** PaginaFilasEquipe */
+         PaginaFilasEquipe: {
+-            /** Total */
+-            total: number;
+             /** Itens */
+             itens: components["schemas"]["FilaEquipeSaida"][];
++            /** Total */
++            total: number;
+         };
+         /** PaginaSolicitacoes */
+         PaginaSolicitacoes: {
+-            /** Total */
+-            total: number;
+             /** Itens */
+             itens: components["schemas"]["SolicitacaoItem"][];
++            /** Total */
++            total: number;
+         };
+         /** Pagina[FilaAdmin] */
+         Pagina_FilaAdmin_: {
+-            /** Total */
+-            total: number;
+             /** Itens */
+             itens: components["schemas"]["FilaAdmin"][];
++            /** Total */
++            total: number;
+         };
+         /** Pagina[UsuarioAdmin] */
+         Pagina_UsuarioAdmin_: {
+-            /** Total */
+-            total: number;
+             /** Itens */
+             itens: components["schemas"]["UsuarioAdmin"][];
++            /** Total */
++            total: number;
+         };
+         /** PainelSaida */
+         PainelSaida: {
+-            /** Total */
+-            total: number;
+             /** Itens */
+             itens: components["schemas"]["ItemPainel"][];
++            /** Total */
++            total: number;
+         };
+         /** PainelVagasSaida */
+         PainelVagasSaida: {
+-            /** Total */
+-            total: number;
+-            /** Sem Proposta */
+-            sem_proposta: number;
+             /** Itens */
+             itens: components["schemas"]["VagaPainel"][];
++            /** Sem Proposta */
++            sem_proposta: number;
++            /** Total */
++            total: number;
+         };
+         /**
+          * Papel
+@@ -1265,69 +1265,69 @@ export interface components {
+          * @description Corpo de toda resposta de erro (`Content-Type: application/problem+json`).
+          */
+         Problema: {
+-            /** Type */
+-            type: string;
+-            /** Title */
+-            title: string;
+-            /** Status */
+-            status: number;
+             /**
+              * Detail
+              * @default null
+              */
+             detail: string | null;
+             /**
+-             * Instance
++             * Errors
+              * @default null
+              */
+-            instance: string | null;
++            errors: components["schemas"]["ErroDeCampo"][] | null;
+             /**
+-             * Errors
++             * Instance
+              * @default null
+              */
+-            errors: components["schemas"]["ErroDeCampo"][] | null;
++            instance: string | null;
++            /** Status */
++            status: number;
++            /** Title */
++            title: string;
++            /** Type */
++            type: string;
+         };
+         /**
+          * RegistroEntrada
+          * @description AM-013: sem papel, situação, classificação de risco nem IDs; campo extra → 422.
+          */
+         RegistroEntrada: {
+-            /** Nome */
+-            nome: string;
+-            /** Cpf */
+-            cpf: string;
++            /**
++             * Aceite Lembrete Email
++             * @default false
++             */
++            aceite_lembrete_email: boolean;
++            /**
++             * Aceite Termo
++             * @constant
++             */
++            aceite_termo: true;
+             /** Cns */
+             cns: string;
++            /** Cpf */
++            cpf: string;
+             /**
+              * Data Nascimento
+              * Format: date
+              */
+             data_nascimento: string;
+-            /** Sexo */
+-            sexo?: ("FEMININO" | "MASCULINO") | null;
+-            /** Municipio */
+-            municipio: string;
+-            /** Telefone */
+-            telefone: string;
+             /** Email */
+             email?: string | null;
++            /** Municipio */
++            municipio: string;
++            /** Nome */
++            nome: string;
+             /**
+              * Senha
+              * Format: password
+              */
+             senha: string;
+-            /**
+-             * Aceite Termo
+-             * @constant
+-             */
+-            aceite_termo: true;
++            /** Sexo */
++            sexo?: ("FEMININO" | "MASCULINO") | null;
++            /** Telefone */
++            telefone: string;
+             /** Versao Termo */
+             versao_termo: string;
+-            /**
+-             * Aceite Lembrete Email
+-             * @default false
+-             */
+-            aceite_lembrete_email: boolean;
+         };
+         /** RespostaEntrada */
+         RespostaEntrada: {
+@@ -1341,20 +1341,20 @@ export interface components {
+         };
+         /** RespostaEquipeSaida */
+         RespostaEquipeSaida: {
++            /** Codigo */
++            codigo: string;
+             /**
+              * Criterio Id
+              * Format: uuid
+              */
+             criterio_id: string;
+-            /** Codigo */
+-            codigo: string;
+             /** Descricao */
+             descricao: string;
+             origem: components["schemas"]["OrigemCriterio"];
+-            /** Valor */
+-            valor: unknown;
+             /** Pontos */
+             pontos: number;
++            /** Valor */
++            valor: unknown;
+         };
+         /** RespostaPaciente */
+         RespostaPaciente: {
+@@ -1382,78 +1382,78 @@ export interface components {
+              */
+             confirmadas: number;
+             /**
+-             * Recusadas
+-             * @description Propostas feitas no recorte e recusadas pelo paciente.
++             * Desistencias
++             * @description Dessas solicitações, as que o paciente cancelou (estão CANCELADA com motivo).
+              */
+-            recusadas: number;
++            desistencias: number;
+             /**
+              * Expiradas
+              * @description Propostas feitas no recorte e expiradas sem resposta.
+              */
+             expiradas: number;
+             /**
+-             * Propostas Encerradas
+-             * @description Confirmadas + recusadas + expiradas: denominador das taxas.
++             * Faltas
++             * @description Faltas registradas com vaga no recorte (`vaga.inicio`).
+              */
+-            propostas_encerradas: number;
++            faltas: number;
+             /**
+              * Propostas Canceladas Sem Resposta
+              * @description Propostas canceladas por outro motivo, sem resposta. Fora das taxas.
+              */
+             propostas_canceladas_sem_resposta: number;
+-            /** Taxa Confirmacao */
+-            taxa_confirmacao: number | null;
+-            /** Taxa Recusa */
+-            taxa_recusa: number | null;
+-            /** Taxa Expiracao */
+-            taxa_expiracao: number | null;
++            /**
++             * Propostas Encerradas
++             * @description Confirmadas + recusadas + expiradas: denominador das taxas.
++             */
++            propostas_encerradas: number;
+             /**
+              * Realizadas
+              * @description Atendimentos realizados com vaga no recorte (`vaga.inicio`).
+              */
+             realizadas: number;
+             /**
+-             * Faltas
+-             * @description Faltas registradas com vaga no recorte (`vaga.inicio`).
+-             */
+-            faltas: number;
+-            /**
+-             * Taxa Faltas
+-             * @description Faltas ÷ (realizadas + faltas).
++             * Recusadas
++             * @description Propostas feitas no recorte e recusadas pelo paciente.
+              */
+-            taxa_faltas: number | null;
++            recusadas: number;
+             /**
+              * Solicitacoes Criadas
+              * @description Solicitações criadas no recorte (`criada_em`).
+              */
+             solicitacoes_criadas: number;
+-            /**
+-             * Desistencias
+-             * @description Dessas solicitações, as que o paciente cancelou (estão CANCELADA com motivo).
+-             */
+-            desistencias: number;
++            /** Taxa Confirmacao */
++            taxa_confirmacao: number | null;
+             /** Taxa Desistencia */
+             taxa_desistencia: number | null;
++            /** Taxa Expiracao */
++            taxa_expiracao: number | null;
+             /**
+-             * Vagas Ofertadas
+-             * @description Vagas ATIVAS com início no recorte.
++             * Taxa Faltas
++             * @description Faltas ÷ (realizadas + faltas).
+              */
+-            vagas_ofertadas: number;
++            taxa_faltas: number | null;
++            /** Taxa Recusa */
++            taxa_recusa: number | null;
+             /**
+              * Vagas Ocupadas
+              * @description Vagas ofertadas com agendamento CONFIRMADO, REALIZADO ou FALTOU. Inclui CONFIRMADO de vaga futura: nem toda ocupada já foi atendida.
+              */
+             vagas_ocupadas: number;
+             /**
+-             * Vagas Reaproveitadas
+-             * @description Vagas com proposta desfeita que outra solicitação confirmou depois.
++             * Vagas Ofertadas
++             * @description Vagas ATIVAS com início no recorte.
+              */
+-            vagas_reaproveitadas: number;
++            vagas_ofertadas: number;
+             /**
+              * Vagas Perdidas
+              * @description Vagas ofertadas já iniciadas sem agendamento CONFIRMADO, REALIZADO ou FALTOU.
+              */
+             vagas_perdidas: number;
++            /**
++             * Vagas Reaproveitadas
++             * @description Vagas com proposta desfeita que outra solicitação confirmou depois.
++             */
++            vagas_reaproveitadas: number;
+         };
+         /** Semana */
+         Semana: {
+@@ -1463,84 +1463,84 @@ export interface components {
+              */
+             confirmadas: number;
+             /**
+-             * Recusadas
+-             * @description Propostas feitas no recorte e recusadas pelo paciente.
++             * Desistencias
++             * @description Dessas solicitações, as que o paciente cancelou (estão CANCELADA com motivo).
+              */
+-            recusadas: number;
++            desistencias: number;
+             /**
+              * Expiradas
+              * @description Propostas feitas no recorte e expiradas sem resposta.
+              */
+             expiradas: number;
+             /**
+-             * Propostas Encerradas
+-             * @description Confirmadas + recusadas + expiradas: denominador das taxas.
++             * Faltas
++             * @description Faltas registradas com vaga no recorte (`vaga.inicio`).
+              */
+-            propostas_encerradas: number;
++            faltas: number;
+             /**
+              * Propostas Canceladas Sem Resposta
+              * @description Propostas canceladas por outro motivo, sem resposta. Fora das taxas.
+              */
+             propostas_canceladas_sem_resposta: number;
+-            /** Taxa Confirmacao */
+-            taxa_confirmacao: number | null;
+-            /** Taxa Recusa */
+-            taxa_recusa: number | null;
+-            /** Taxa Expiracao */
+-            taxa_expiracao: number | null;
++            /**
++             * Propostas Encerradas
++             * @description Confirmadas + recusadas + expiradas: denominador das taxas.
++             */
++            propostas_encerradas: number;
+             /**
+              * Realizadas
+              * @description Atendimentos realizados com vaga no recorte (`vaga.inicio`).
+              */
+             realizadas: number;
+             /**
+-             * Faltas
+-             * @description Faltas registradas com vaga no recorte (`vaga.inicio`).
++             * Recusadas
++             * @description Propostas feitas no recorte e recusadas pelo paciente.
+              */
+-            faltas: number;
++            recusadas: number;
+             /**
+-             * Taxa Faltas
+-             * @description Faltas ÷ (realizadas + faltas).
++             * Semana
++             * Format: date
++             * @description Segunda-feira da semana, em Recife.
+              */
+-            taxa_faltas: number | null;
++            semana: string;
+             /**
+              * Solicitacoes Criadas
+              * @description Solicitações criadas no recorte (`criada_em`).
+              */
+             solicitacoes_criadas: number;
+-            /**
+-             * Desistencias
+-             * @description Dessas solicitações, as que o paciente cancelou (estão CANCELADA com motivo).
+-             */
+-            desistencias: number;
++            /** Taxa Confirmacao */
++            taxa_confirmacao: number | null;
+             /** Taxa Desistencia */
+             taxa_desistencia: number | null;
++            /** Taxa Expiracao */
++            taxa_expiracao: number | null;
+             /**
+-             * Vagas Ofertadas
+-             * @description Vagas ATIVAS com início no recorte.
++             * Taxa Faltas
++             * @description Faltas ÷ (realizadas + faltas).
+              */
+-            vagas_ofertadas: number;
++            taxa_faltas: number | null;
++            /** Taxa Recusa */
++            taxa_recusa: number | null;
+             /**
+              * Vagas Ocupadas
+              * @description Vagas ofertadas com agendamento CONFIRMADO, REALIZADO ou FALTOU. Inclui CONFIRMADO de vaga futura: nem toda ocupada já foi atendida.
+              */
+             vagas_ocupadas: number;
+             /**
+-             * Vagas Reaproveitadas
+-             * @description Vagas com proposta desfeita que outra solicitação confirmou depois.
++             * Vagas Ofertadas
++             * @description Vagas ATIVAS com início no recorte.
+              */
+-            vagas_reaproveitadas: number;
++            vagas_ofertadas: number;
+             /**
+              * Vagas Perdidas
+              * @description Vagas ofertadas já iniciadas sem agendamento CONFIRMADO, REALIZADO ou FALTOU.
+              */
+             vagas_perdidas: number;
+             /**
+-             * Semana
+-             * Format: date
+-             * @description Segunda-feira da semana, em Recife.
++             * Vagas Reaproveitadas
++             * @description Vagas com proposta desfeita que outra solicitação confirmou depois.
+              */
+-            semana: string;
++            vagas_reaproveitadas: number;
+         };
+         /**
+          * SenhaTemporariaSaida
+@@ -1560,12 +1560,12 @@ export interface components {
+          * @description Os tokens vão só em cookies httpOnly (ADR-003); o corpo não traz token.
+          */
+         SessaoSaida: {
+-            papel: components["schemas"]["Papel"];
+             /**
+              * Expira Em
+              * Format: date-time
+              */
+             expira_em: string;
++            papel: components["schemas"]["Papel"];
+         };
+         /**
+          * SituacaoVaga
+@@ -1574,31 +1574,31 @@ export interface components {
+         SituacaoVaga: "LIVRE" | "LIVRE_SEM_PROPOSTA" | "PROPOSTA" | "CONFIRMADA" | "BLOQUEADA" | "ENCERRADA";
+         /** SolicitacaoDetalhe */
+         SolicitacaoDetalhe: {
++            agendamento_ativo: components["schemas"]["AgendamentoPaciente"] | null;
+             /**
+-             * Id
+-             * Format: uuid
++             * Criada Em
++             * Format: date-time
+              */
+-            id: string;
+-            status: components["schemas"]["StatusSolicitacao"];
+-            fila: components["schemas"]["FilaResumo"];
++            criada_em: string;
+             /**
+              * Data Pedido
+              * Format: date
+              */
+             data_pedido: string;
++            fila: components["schemas"]["FilaResumo"];
+             /**
+-             * Criada Em
+-             * Format: date-time
++             * Id
++             * Format: uuid
+              */
+-            criada_em: string;
+-            turno_preferido: components["schemas"]["Turno"];
++            id: string;
++            /** Linha Do Tempo */
++            linha_do_tempo: components["schemas"]["EventoPaciente"][];
+             /** Origem Encaminhamento */
+             origem_encaminhamento: string | null;
+             /** Respostas */
+             respostas: components["schemas"]["RespostaPaciente"][];
+-            /** Linha Do Tempo */
+-            linha_do_tempo: components["schemas"]["EventoPaciente"][];
+-            agendamento_ativo: components["schemas"]["AgendamentoPaciente"] | null;
++            status: components["schemas"]["StatusSolicitacao"];
++            turno_preferido: components["schemas"]["Turno"];
+         };
+         /**
+          * SolicitacaoEntrada
+@@ -1610,71 +1610,71 @@ export interface components {
+              * Format: uuid
+              */
+             fila_id: string;
+-            /** @default QUALQUER */
+-            turno_preferido: components["schemas"]["Turno"];
+             /** Origem Encaminhamento */
+             origem_encaminhamento: string;
+             /** Respostas */
+             respostas?: components["schemas"]["RespostaEntrada"][];
++            /** @default QUALQUER */
++            turno_preferido: components["schemas"]["Turno"];
+         };
+         /** SolicitacaoEquipeSaida */
+         SolicitacaoEquipeSaida: {
++            classificacao_risco: components["schemas"]["ClassificacaoRisco"] | null;
++            /** Data Entrada Fila */
++            data_entrada_fila: string | null;
+             /**
+-             * Id
+-             * Format: uuid
++             * Data Pedido
++             * Format: date
+              */
+-            id: string;
+-            status: components["schemas"]["StatusSolicitacao"];
++            data_pedido: string;
+             /**
+              * Fila Id
+              * Format: uuid
+              */
+             fila_id: string;
+-            /** Paciente Nome */
+-            paciente_nome: string;
+-            /** Paciente Cpf */
+-            paciente_cpf: string;
+-            classificacao_risco: components["schemas"]["ClassificacaoRisco"] | null;
+-            /** Nota */
+-            nota: number;
+-            /** Data Entrada Fila */
+-            data_entrada_fila: string | null;
++            /** Historico */
++            historico: components["schemas"]["EventoEquipe"][];
+             /**
+-             * Data Pedido
+-             * Format: date
++             * Id
++             * Format: uuid
+              */
+-            data_pedido: string;
+-            turno_preferido: components["schemas"]["Turno"];
++            id: string;
++            /** Nota */
++            nota: number;
+             /** Origem Encaminhamento */
+             origem_encaminhamento: string | null;
++            /** Paciente Cpf */
++            paciente_cpf: string;
++            /** Paciente Nome */
++            paciente_nome: string;
+             /** Respostas */
+             respostas: components["schemas"]["RespostaEquipeSaida"][];
+-            /** Historico */
+-            historico: components["schemas"]["EventoEquipe"][];
++            status: components["schemas"]["StatusSolicitacao"];
++            turno_preferido: components["schemas"]["Turno"];
+         };
+         /**
+          * SolicitacaoItem
+          * @description Item de "Meus atendimentos": o resumo da solicitação e do agendamento ativo.
+          */
+         SolicitacaoItem: {
++            agendamento_ativo: components["schemas"]["AgendamentoResumo"] | null;
+             /**
+-             * Id
+-             * Format: uuid
++             * Criada Em
++             * Format: date-time
+              */
+-            id: string;
+-            status: components["schemas"]["StatusSolicitacao"];
+-            fila: components["schemas"]["FilaResumo"];
++            criada_em: string;
+             /**
+              * Data Pedido
+              * Format: date
+              */
+             data_pedido: string;
++            fila: components["schemas"]["FilaResumo"];
+             /**
+-             * Criada Em
+-             * Format: date-time
++             * Id
++             * Format: uuid
+              */
+-            criada_em: string;
+-            agendamento_ativo: components["schemas"]["AgendamentoResumo"] | null;
++            id: string;
++            status: components["schemas"]["StatusSolicitacao"];
+         };
+         /**
+          * StatusAgendamento
+@@ -1706,10 +1706,10 @@ export interface components {
+         };
+         /** TermoSaida */
+         TermoSaida: {
+-            /** Versao */
+-            versao: string;
+             /** Texto */
+             texto: string;
++            /** Versao */
++            versao: string;
+         };
+         /**
+          * TipoAviso
+@@ -1749,12 +1749,12 @@ export interface components {
+          * @description Sem motivo: texto livre da reclassificação fica só no detalhe, que é auditado.
+          */
+         UltimaMudanca: {
+-            tipo: components["schemas"]["TipoEventoLinhaDoTempo"];
+             /**
+              * Ocorrido Em
+              * Format: date-time
+              */
+             ocorrido_em: string;
++            tipo: components["schemas"]["TipoEventoLinhaDoTempo"];
+         };
+         /** UnidadeResumo */
+         UnidadeResumo: {
+@@ -1773,43 +1773,43 @@ export interface components {
+              * Format: uuid
+              */
+             id: string;
+-            /** Sigla */
+-            sigla: string;
+             /** Nome */
+             nome: string;
++            /** Sigla */
++            sigla: string;
+         };
+         /** UnidadesEntrada */
+         UnidadesEntrada: {
+-            /** Unidade Ids */
+-            unidade_ids: string[];
+             /**
+              * Confirmar Visao Central
+              * @default false
+              */
+             confirmar_visao_central: boolean;
++            /** Unidade Ids */
++            unidade_ids: string[];
+         };
+         /**
+          * UsuarioAdmin
+          * @description `filas` só para ATENDENTE e `unidades` só para GESTOR; gestor sem unidade vê a central.
+          */
+         UsuarioAdmin: {
++            /** Email */
++            email: string | null;
++            /** Filas */
++            filas: string[];
+             /**
+              * Id
+              * Format: uuid
+              */
+             id: string;
+-            /** Email */
+-            email: string | null;
+             papel: components["schemas"]["Papel"];
++            /** Senha Temporaria */
++            senha_temporaria: boolean;
+             /**
+              * Situacao
+              * @enum {string}
+              */
+             situacao: "ATIVO" | "SUSPENSO";
+-            /** Senha Temporaria */
+-            senha_temporaria: boolean;
+-            /** Filas */
+-            filas: string[];
+             /** Unidades */
+             unidades: string[];
+         };
+@@ -1818,6 +1818,11 @@ export interface components {
+          * @description Papel só da equipe. `unidade_ids` vale só para GESTOR (outro papel → 422).
+          */
+         UsuarioEntrada: {
++            /**
++             * Confirmar Visao Central
++             * @default false
++             */
++            confirmar_visao_central: boolean;
+             /** Email */
+             email: string;
+             /**
+@@ -1827,14 +1832,14 @@ export interface components {
+             papel: "ATENDENTE" | "GESTOR" | "ADMIN";
+             /** Unidade Ids */
+             unidade_ids?: string[] | null;
+-            /**
+-             * Confirmar Visao Central
+-             * @default false
+-             */
+-            confirmar_visao_central: boolean;
+         };
+         /** VagaPainel */
+         VagaPainel: {
++            /**
++             * Fim
++             * Format: date-time
++             */
++            fim: string;
+             /**
+              * Id
+              * Format: uuid
+@@ -1845,11 +1850,6 @@ export interface components {
+              * Format: date-time
+              */
+             inicio: string;
+-            /**
+-             * Fim
+-             * Format: date-time
+-             */
+-            fim: string;
+             /** Profissional */
+             profissional: string;
+             situacao: components["schemas"]["SituacaoVaga"];
+@@ -1863,9 +1863,12 @@ export interface components {
+ }
+ export type $defs = Record<string, never>;
+ export interface operations {
+-    health_api_v1_health_get: {
++    listar_filas_api_v1_admin_filas_get: {
+         parameters: {
+-            query?: never;
++            query?: {
++                limit?: number;
++                offset?: number;
++            };
+             header?: never;
+             path?: never;
+             cookie?: never;
+@@ -1878,13 +1881,29 @@ export interface operations {
+                     [name: string]: unknown;
+                 };
+                 content: {
+-                    "application/json": {
+-                        [key: string]: string;
+-                    };
++                    "application/json": components["schemas"]["Pagina_FilaAdmin_"];
+                 };
+             };
+-            /** @description Service Unavailable */
+-            503: {
++            /** @description Unauthorized: `/problemas/nao-autenticado` */
++            401: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/problem+json": components["schemas"]["Problema"];
++                };
++            };
++            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/troca-de-senha-obrigatoria` */
++            403: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/problem+json": components["schemas"]["Problema"];
++                };
++            };
++            /** @description Unprocessable Entity */
++            422: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+@@ -1894,30 +1913,31 @@ export interface operations {
+             };
+         };
+     };
+-    registrar_api_v1_auth_registro_post: {
++    listar_usuarios_api_v1_admin_usuarios_get: {
+         parameters: {
+-            query?: never;
++            query?: {
++                limit?: number;
++                offset?: number;
++                papel?: ("ATENDENTE" | "GESTOR" | "ADMIN") | null;
++                situacao?: ("ATIVO" | "SUSPENSO") | null;
++            };
+             header?: never;
+             path?: never;
+             cookie?: never;
+         };
+-        requestBody: {
+-            content: {
+-                "application/json": components["schemas"]["RegistroEntrada"];
+-            };
+-        };
++        requestBody?: never;
+         responses: {
+             /** @description Successful Response */
+-            201: {
++            200: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+                 content: {
+-                    "application/json": components["schemas"]["SessaoSaida"];
++                    "application/json": components["schemas"]["Pagina_UsuarioAdmin_"];
+                 };
+             };
+-            /** @description Conflict: `/problemas/cadastro-nao-concluido` */
+-            409: {
++            /** @description Unauthorized: `/problemas/nao-autenticado` */
++            401: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+@@ -1925,8 +1945,8 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Unprocessable Entity */
+-            422: {
++            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/troca-de-senha-obrigatoria` */
++            403: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+@@ -1934,8 +1954,8 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Too Many Requests: `/problemas/muitas-tentativas` */
+-            429: {
++            /** @description Unprocessable Entity */
++            422: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+@@ -1945,7 +1965,7 @@ export interface operations {
+             };
+         };
+     };
+-    login_api_v1_auth_login_post: {
++    criar_usuario_api_v1_admin_usuarios_post: {
+         parameters: {
+             query?: never;
+             header?: never;
+@@ -1954,20 +1974,20 @@ export interface operations {
+         };
+         requestBody: {
+             content: {
+-                "application/json": components["schemas"]["LoginEntrada"];
++                "application/json": components["schemas"]["UsuarioEntrada"];
+             };
+         };
+         responses: {
+             /** @description Successful Response */
+-            200: {
++            201: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+                 content: {
+-                    "application/json": components["schemas"]["LoginSaida"];
++                    "application/json": components["schemas"]["SenhaTemporariaSaida"];
+                 };
+             };
+-            /** @description Unauthorized: `/problemas/credenciais-invalidas` */
++            /** @description Unauthorized: `/problemas/nao-autenticado` */
+             401: {
+                 headers: {
+                     [name: string]: unknown;
+@@ -1976,8 +1996,8 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Unprocessable Entity */
+-            422: {
++            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/csrf-invalido`, `/problemas/troca-de-senha-obrigatoria` */
++            403: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+@@ -1985,8 +2005,17 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Too Many Requests: `/problemas/muitas-tentativas` */
+-            429: {
++            /** @description Conflict: `/problemas/email-ja-cadastrado`, `/problemas/visao-central-nao-confirmada` */
++            409: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/problem+json": components["schemas"]["Problema"];
++                };
++            };
++            /** @description Unprocessable Entity */
++            422: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+@@ -1996,16 +2025,18 @@ export interface operations {
+             };
+         };
+     };
+-    trocar_senha_api_v1_auth_trocar_senha_post: {
++    atribuir_filas_api_v1_admin_usuarios__usuario_id__filas_put: {
+         parameters: {
+             query?: never;
+             header?: never;
+-            path?: never;
++            path: {
++                usuario_id: string;
++            };
+             cookie?: never;
+         };
+         requestBody: {
+             content: {
+-                "application/json": components["schemas"]["TrocaSenhaEntrada"];
++                "application/json": components["schemas"]["FilasEntrada"];
+             };
+         };
+         responses: {
+@@ -2025,7 +2056,7 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Forbidden: `/problemas/csrf-invalido` */
++            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/csrf-invalido`, `/problemas/troca-de-senha-obrigatoria` */
+             403: {
+                 headers: {
+                     [name: string]: unknown;
+@@ -2034,8 +2065,17 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Unprocessable Entity */
+-            422: {
++            /** @description Not Found */
++            404: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/problem+json": components["schemas"]["Problema"];
++                };
++            };
++            /** @description Conflict: `/problemas/operacao-nao-permitida` */
++            409: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+@@ -2043,8 +2083,8 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Too Many Requests: `/problemas/muitas-tentativas` */
+-            429: {
++            /** @description Unprocessable Entity */
++            422: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+@@ -2054,23 +2094,23 @@ export interface operations {
+             };
+         };
+     };
+-    renovar_api_v1_auth_refresh_post: {
++    reativar_api_v1_admin_usuarios__usuario_id__reativar_post: {
+         parameters: {
+             query?: never;
+             header?: never;
+-            path?: never;
++            path: {
++                usuario_id: string;
++            };
+             cookie?: never;
+         };
+         requestBody?: never;
+         responses: {
+             /** @description Successful Response */
+-            200: {
++            204: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+-                content: {
+-                    "application/json": components["schemas"]["SessaoSaida"];
+-                };
++                content?: never;
+             };
+             /** @description Unauthorized: `/problemas/nao-autenticado` */
+             401: {
+@@ -2081,7 +2121,7 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Forbidden: `/problemas/csrf-invalido` */
++            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/csrf-invalido`, `/problemas/troca-de-senha-obrigatoria` */
+             403: {
+                 headers: {
+                     [name: string]: unknown;
+@@ -2090,26 +2130,26 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-        };
+-    };
+-    logout_api_v1_auth_logout_post: {
+-        parameters: {
+-            query?: never;
+-            header?: never;
+-            path?: never;
+-            cookie?: never;
+-        };
+-        requestBody?: never;
+-        responses: {
+-            /** @description Successful Response */
+-            204: {
++            /** @description Not Found */
++            404: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+-                content?: never;
++                content: {
++                    "application/problem+json": components["schemas"]["Problema"];
++                };
+             };
+-            /** @description Forbidden: `/problemas/csrf-invalido` */
+-            403: {
++            /** @description Conflict: `/problemas/transicao-invalida` */
++            409: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/problem+json": components["schemas"]["Problema"];
++                };
++            };
++            /** @description Unprocessable Entity */
++            422: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+@@ -2119,11 +2159,13 @@ export interface operations {
+             };
+         };
+     };
+-    eu_api_v1_me_get: {
++    redefinir_senha_api_v1_admin_usuarios__usuario_id__redefinir_senha_post: {
+         parameters: {
+             query?: never;
+             header?: never;
+-            path?: never;
++            path: {
++                usuario_id: string;
++            };
+             cookie?: never;
+         };
+         requestBody?: never;
+@@ -2134,7 +2176,7 @@ export interface operations {
+                     [name: string]: unknown;
+                 };
+                 content: {
+-                    "application/json": components["schemas"]["EuSaida"];
++                    "application/json": components["schemas"]["SenhaTemporariaSaida"];
+                 };
+             };
+             /** @description Unauthorized: `/problemas/nao-autenticado` */
+@@ -2146,33 +2188,17 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-        };
+-    };
+-    listar_usuarios_api_v1_admin_usuarios_get: {
+-        parameters: {
+-            query?: {
+-                limit?: number;
+-                offset?: number;
+-                papel?: ("ATENDENTE" | "GESTOR" | "ADMIN") | null;
+-                situacao?: ("ATIVO" | "SUSPENSO") | null;
+-            };
+-            header?: never;
+-            path?: never;
+-            cookie?: never;
+-        };
+-        requestBody?: never;
+-        responses: {
+-            /** @description Successful Response */
+-            200: {
++            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/csrf-invalido`, `/problemas/troca-de-senha-obrigatoria` */
++            403: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+                 content: {
+-                    "application/json": components["schemas"]["Pagina_UsuarioAdmin_"];
++                    "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Unauthorized: `/problemas/nao-autenticado` */
+-            401: {
++            /** @description Not Found */
++            404: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+@@ -2180,8 +2206,8 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/troca-de-senha-obrigatoria` */
+-            403: {
++            /** @description Conflict: `/problemas/operacao-nao-permitida` */
++            409: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+@@ -2200,27 +2226,27 @@ export interface operations {
+             };
+         };
+     };
+-    criar_usuario_api_v1_admin_usuarios_post: {
++    suspender_api_v1_admin_usuarios__usuario_id__suspender_post: {
+         parameters: {
+             query?: never;
+             header?: never;
+-            path?: never;
++            path: {
++                usuario_id: string;
++            };
+             cookie?: never;
+         };
+         requestBody: {
+             content: {
+-                "application/json": components["schemas"]["UsuarioEntrada"];
++                "application/json": components["schemas"]["SuspensaoEntrada"];
+             };
+         };
+         responses: {
+             /** @description Successful Response */
+-            201: {
++            204: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+-                content: {
+-                    "application/json": components["schemas"]["SenhaTemporariaSaida"];
+-                };
++                content?: never;
+             };
+             /** @description Unauthorized: `/problemas/nao-autenticado` */
+             401: {
+@@ -2240,7 +2266,16 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Conflict: `/problemas/email-ja-cadastrado`, `/problemas/visao-central-nao-confirmada` */
++            /** @description Not Found */
++            404: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/problem+json": components["schemas"]["Problema"];
++                };
++            };
++            /** @description Conflict: `/problemas/transicao-invalida`, `/problemas/operacao-nao-permitida` */
+             409: {
+                 headers: {
+                     [name: string]: unknown;
+@@ -2260,7 +2295,7 @@ export interface operations {
+             };
+         };
+     };
+-    redefinir_senha_api_v1_admin_usuarios__usuario_id__redefinir_senha_post: {
++    atribuir_unidades_api_v1_admin_usuarios__usuario_id__unidades_put: {
+         parameters: {
+             query?: never;
+             header?: never;
+@@ -2269,16 +2304,18 @@ export interface operations {
+             };
+             cookie?: never;
+         };
+-        requestBody?: never;
++        requestBody: {
++            content: {
++                "application/json": components["schemas"]["UnidadesEntrada"];
++            };
++        };
+         responses: {
+             /** @description Successful Response */
+-            200: {
++            204: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+-                content: {
+-                    "application/json": components["schemas"]["SenhaTemporariaSaida"];
+-                };
++                content?: never;
+             };
+             /** @description Unauthorized: `/problemas/nao-autenticado` */
+             401: {
+@@ -2307,7 +2344,7 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Conflict: `/problemas/operacao-nao-permitida` */
++            /** @description Conflict: `/problemas/operacao-nao-permitida`, `/problemas/visao-central-nao-confirmada` */
+             409: {
+                 headers: {
+                     [name: string]: unknown;
+@@ -2327,27 +2364,25 @@ export interface operations {
+             };
+         };
+     };
+-    atribuir_filas_api_v1_admin_usuarios__usuario_id__filas_put: {
++    confirmar_api_v1_agendamentos__agendamento_id__confirmar_post: {
+         parameters: {
+             query?: never;
+             header?: never;
+             path: {
+-                usuario_id: string;
++                agendamento_id: string;
+             };
+             cookie?: never;
+         };
+-        requestBody: {
+-            content: {
+-                "application/json": components["schemas"]["FilasEntrada"];
+-            };
+-        };
++        requestBody?: never;
+         responses: {
+             /** @description Successful Response */
+-            204: {
++            200: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+-                content?: never;
++                content: {
++                    "application/json": components["schemas"]["SolicitacaoDetalhe"];
++                };
+             };
+             /** @description Unauthorized: `/problemas/nao-autenticado` */
+             401: {
+@@ -2376,7 +2411,7 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Conflict: `/problemas/operacao-nao-permitida` */
++            /** @description Conflict: `/problemas/transicao-invalida`, `/problemas/proposta-expirada` */
+             409: {
+                 headers: {
+                     [name: string]: unknown;
+@@ -2396,27 +2431,25 @@ export interface operations {
+             };
+         };
+     };
+-    atribuir_unidades_api_v1_admin_usuarios__usuario_id__unidades_put: {
++    recusar_api_v1_agendamentos__agendamento_id__recusar_post: {
+         parameters: {
+             query?: never;
+             header?: never;
+             path: {
+-                usuario_id: string;
++                agendamento_id: string;
+             };
+             cookie?: never;
+         };
+-        requestBody: {
+-            content: {
+-                "application/json": components["schemas"]["UnidadesEntrada"];
+-            };
+-        };
++        requestBody?: never;
+         responses: {
+             /** @description Successful Response */
+-            204: {
++            200: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+-                content?: never;
++                content: {
++                    "application/json": components["schemas"]["SolicitacaoDetalhe"];
++                };
+             };
+             /** @description Unauthorized: `/problemas/nao-autenticado` */
+             401: {
+@@ -2445,7 +2478,7 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Conflict: `/problemas/operacao-nao-permitida`, `/problemas/visao-central-nao-confirmada` */
++            /** @description Conflict: `/problemas/transicao-invalida`, `/problemas/proposta-expirada` */
+             409: {
+                 headers: {
+                     [name: string]: unknown;
+@@ -2465,17 +2498,18 @@ export interface operations {
+             };
+         };
+     };
+-    listar_filas_api_v1_admin_filas_get: {
++    login_api_v1_auth_login_post: {
+         parameters: {
+-            query?: {
+-                limit?: number;
+-                offset?: number;
+-            };
++            query?: never;
+             header?: never;
+             path?: never;
+             cookie?: never;
+         };
+-        requestBody?: never;
++        requestBody: {
++            content: {
++                "application/json": components["schemas"]["LoginEntrada"];
++            };
++        };
+         responses: {
+             /** @description Successful Response */
+             200: {
+@@ -2483,10 +2517,10 @@ export interface operations {
+                     [name: string]: unknown;
+                 };
+                 content: {
+-                    "application/json": components["schemas"]["Pagina_FilaAdmin_"];
++                    "application/json": components["schemas"]["LoginSaida"];
+                 };
+             };
+-            /** @description Unauthorized: `/problemas/nao-autenticado` */
++            /** @description Unauthorized: `/problemas/credenciais-invalidas` */
+             401: {
+                 headers: {
+                     [name: string]: unknown;
+@@ -2495,8 +2529,8 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/troca-de-senha-obrigatoria` */
+-            403: {
++            /** @description Unprocessable Entity */
++            422: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+@@ -2504,8 +2538,8 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Unprocessable Entity */
+-            422: {
++            /** @description Too Many Requests: `/problemas/muitas-tentativas` */
++            429: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+@@ -2515,20 +2549,14 @@ export interface operations {
+             };
+         };
+     };
+-    suspender_api_v1_admin_usuarios__usuario_id__suspender_post: {
++    logout_api_v1_auth_logout_post: {
+         parameters: {
+             query?: never;
+             header?: never;
+-            path: {
+-                usuario_id: string;
+-            };
++            path?: never;
+             cookie?: never;
+         };
+-        requestBody: {
+-            content: {
+-                "application/json": components["schemas"]["SuspensaoEntrada"];
+-            };
+-        };
++        requestBody?: never;
+         responses: {
+             /** @description Successful Response */
+             204: {
+@@ -2537,6 +2565,35 @@ export interface operations {
+                 };
+                 content?: never;
+             };
++            /** @description Forbidden: `/problemas/csrf-invalido` */
++            403: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/problem+json": components["schemas"]["Problema"];
++                };
++            };
++        };
++    };
++    renovar_api_v1_auth_refresh_post: {
++        parameters: {
++            query?: never;
++            header?: never;
++            path?: never;
++            cookie?: never;
++        };
++        requestBody?: never;
++        responses: {
++            /** @description Successful Response */
++            200: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/json": components["schemas"]["SessaoSaida"];
++                };
++            };
+             /** @description Unauthorized: `/problemas/nao-autenticado` */
+             401: {
+                 headers: {
+@@ -2546,7 +2603,7 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/csrf-invalido`, `/problemas/troca-de-senha-obrigatoria` */
++            /** @description Forbidden: `/problemas/csrf-invalido` */
+             403: {
+                 headers: {
+                     [name: string]: unknown;
+@@ -2555,16 +2612,31 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Not Found */
+-            404: {
++        };
++    };
++    registrar_api_v1_auth_registro_post: {
++        parameters: {
++            query?: never;
++            header?: never;
++            path?: never;
++            cookie?: never;
++        };
++        requestBody: {
++            content: {
++                "application/json": components["schemas"]["RegistroEntrada"];
++            };
++        };
++        responses: {
++            /** @description Successful Response */
++            201: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+                 content: {
+-                    "application/problem+json": components["schemas"]["Problema"];
++                    "application/json": components["schemas"]["SessaoSaida"];
+                 };
+             };
+-            /** @description Conflict: `/problemas/transicao-invalida`, `/problemas/operacao-nao-permitida` */
++            /** @description Conflict: `/problemas/cadastro-nao-concluido` */
+             409: {
+                 headers: {
+                     [name: string]: unknown;
+@@ -2582,18 +2654,29 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
++            /** @description Too Many Requests: `/problemas/muitas-tentativas` */
++            429: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/problem+json": components["schemas"]["Problema"];
++                };
++            };
+         };
+     };
+-    reativar_api_v1_admin_usuarios__usuario_id__reativar_post: {
++    trocar_senha_api_v1_auth_trocar_senha_post: {
+         parameters: {
+             query?: never;
+             header?: never;
+-            path: {
+-                usuario_id: string;
+-            };
++            path?: never;
+             cookie?: never;
+         };
+-        requestBody?: never;
++        requestBody: {
++            content: {
++                "application/json": components["schemas"]["TrocaSenhaEntrada"];
++            };
++        };
+         responses: {
+             /** @description Successful Response */
+             204: {
+@@ -2611,7 +2694,7 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/csrf-invalido`, `/problemas/troca-de-senha-obrigatoria` */
++            /** @description Forbidden: `/problemas/csrf-invalido` */
+             403: {
+                 headers: {
+                     [name: string]: unknown;
+@@ -2620,17 +2703,8 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Not Found */
+-            404: {
+-                headers: {
+-                    [name: string]: unknown;
+-                };
+-                content: {
+-                    "application/problem+json": components["schemas"]["Problema"];
+-                };
+-            };
+-            /** @description Conflict: `/problemas/transicao-invalida` */
+-            409: {
++            /** @description Unprocessable Entity */
++            422: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+@@ -2638,8 +2712,8 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Unprocessable Entity */
+-            422: {
++            /** @description Too Many Requests: `/problemas/muitas-tentativas` */
++            429: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+@@ -2649,9 +2723,10 @@ export interface operations {
+             };
+         };
+     };
+-    listar_filas_api_v1_filas_get: {
++    listar_api_v1_avisos_get: {
+         parameters: {
+             query?: {
++                somente_nao_lidos?: boolean;
+                 limit?: number;
+                 offset?: number;
+             };
+@@ -2667,7 +2742,7 @@ export interface operations {
+                     [name: string]: unknown;
+                 };
+                 content: {
+-                    "application/json": components["schemas"]["PaginaFilas"];
++                    "application/json": components["schemas"]["PaginaAvisos"];
+                 };
+             };
+             /** @description Unauthorized: `/problemas/nao-autenticado` */
+@@ -2679,7 +2754,7 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/troca-de-senha-obrigatoria` */
++            /** @description Forbidden: `/problemas/troca-de-senha-obrigatoria` */
+             403: {
+                 headers: {
+                     [name: string]: unknown;
+@@ -2699,13 +2774,11 @@ export interface operations {
+             };
+         };
+     };
+-    detalhar_fila_api_v1_filas__fila_id__get: {
++    contagem_api_v1_avisos_contagem_get: {
+         parameters: {
+             query?: never;
+             header?: never;
+-            path: {
+-                fila_id: string;
+-            };
++            path?: never;
+             cookie?: never;
+         };
+         requestBody?: never;
+@@ -2716,7 +2789,7 @@ export interface operations {
+                     [name: string]: unknown;
+                 };
+                 content: {
+-                    "application/json": components["schemas"]["FilaDetalheSaida"];
++                    "application/json": components["schemas"]["ContagemSaida"];
+                 };
+             };
+             /** @description Unauthorized: `/problemas/nao-autenticado` */
+@@ -2728,7 +2801,7 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/troca-de-senha-obrigatoria` */
++            /** @description Forbidden: `/problemas/troca-de-senha-obrigatoria` */
+             403: {
+                 headers: {
+                     [name: string]: unknown;
+@@ -2737,33 +2810,11 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Not Found */
+-            404: {
+-                headers: {
+-                    [name: string]: unknown;
+-                };
+-                content: {
+-                    "application/problem+json": components["schemas"]["Problema"];
+-                };
+-            };
+-            /** @description Unprocessable Entity */
+-            422: {
+-                headers: {
+-                    [name: string]: unknown;
+-                };
+-                content: {
+-                    "application/problem+json": components["schemas"]["Problema"];
+-                };
+-            };
+         };
+     };
+-    listar_api_v1_solicitacoes_get: {
++    marcar_todos_api_v1_avisos_lidos_post: {
+         parameters: {
+-            query?: {
+-                situacao?: ("abertas" | "encerradas") | null;
+-                limit?: number;
+-                offset?: number;
+-            };
++            query?: never;
+             header?: never;
+             path?: never;
+             cookie?: never;
+@@ -2771,13 +2822,11 @@ export interface operations {
+         requestBody?: never;
+         responses: {
+             /** @description Successful Response */
+-            200: {
++            204: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+-                content: {
+-                    "application/json": components["schemas"]["PaginaSolicitacoes"];
+-                };
++                content?: never;
+             };
+             /** @description Unauthorized: `/problemas/nao-autenticado` */
+             401: {
+@@ -2788,7 +2837,7 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/troca-de-senha-obrigatoria` */
++            /** @description Forbidden: `/problemas/csrf-invalido`, `/problemas/troca-de-senha-obrigatoria` */
+             403: {
+                 headers: {
+                     [name: string]: unknown;
+@@ -2797,38 +2846,25 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Unprocessable Entity */
+-            422: {
+-                headers: {
+-                    [name: string]: unknown;
+-                };
+-                content: {
+-                    "application/problem+json": components["schemas"]["Problema"];
+-                };
+-            };
+         };
+     };
+-    criar_api_v1_solicitacoes_post: {
++    marcar_lido_api_v1_avisos__aviso_id__lido_post: {
+         parameters: {
+             query?: never;
+             header?: never;
+-            path?: never;
+-            cookie?: never;
+-        };
+-        requestBody: {
+-            content: {
+-                "application/json": components["schemas"]["SolicitacaoEntrada"];
++            path: {
++                aviso_id: string;
+             };
++            cookie?: never;
+         };
++        requestBody?: never;
+         responses: {
+             /** @description Successful Response */
+-            201: {
++            204: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+-                content: {
+-                    "application/json": components["schemas"]["SolicitacaoDetalhe"];
+-                };
++                content?: never;
+             };
+             /** @description Unauthorized: `/problemas/nao-autenticado` */
+             401: {
+@@ -2839,7 +2875,7 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/csrf-invalido`, `/problemas/sem-consentimento`, `/problemas/troca-de-senha-obrigatoria` */
++            /** @description Forbidden: `/problemas/csrf-invalido`, `/problemas/troca-de-senha-obrigatoria` */
+             403: {
+                 headers: {
+                     [name: string]: unknown;
+@@ -2848,8 +2884,8 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Conflict: `/problemas/nao-elegivel`, `/problemas/solicitacao-duplicada` */
+-            409: {
++            /** @description Not Found */
++            404: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+@@ -2868,16 +2904,20 @@ export interface operations {
+             };
+         };
+     };
+-    detalhar_api_v1_solicitacoes__solicitacao_id__get: {
++    presenca_api_v1_equipe_agendamentos__agendamento_id__presenca_post: {
+         parameters: {
+             query?: never;
+             header?: never;
+             path: {
+-                solicitacao_id: string;
++                agendamento_id: string;
+             };
+             cookie?: never;
+         };
+-        requestBody?: never;
++        requestBody: {
++            content: {
++                "application/json": components["schemas"]["PresencaEntrada"];
++            };
++        };
+         responses: {
+             /** @description Successful Response */
+             200: {
+@@ -2885,7 +2925,7 @@ export interface operations {
+                     [name: string]: unknown;
+                 };
+                 content: {
+-                    "application/json": components["schemas"]["SolicitacaoDetalhe"];
++                    "application/json": components["schemas"]["SolicitacaoEquipeSaida"];
+                 };
+             };
+             /** @description Unauthorized: `/problemas/nao-autenticado` */
+@@ -2897,7 +2937,7 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/troca-de-senha-obrigatoria` */
++            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/csrf-invalido`, `/problemas/troca-de-senha-obrigatoria` */
+             403: {
+                 headers: {
+                     [name: string]: unknown;
+@@ -2915,6 +2955,15 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
++            /** @description Conflict: `/problemas/transicao-invalida`, `/problemas/tolerancia-nao-encerrada` */
++            409: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/problem+json": components["schemas"]["Problema"];
++                };
++            };
+             /** @description Unprocessable Entity */
+             422: {
+                 headers: {
+@@ -2926,20 +2975,17 @@ export interface operations {
+             };
+         };
+     };
+-    cancelar_api_v1_solicitacoes__solicitacao_id__cancelar_post: {
++    listar_filas_api_v1_equipe_filas_get: {
+         parameters: {
+-            query?: never;
+-            header?: never;
+-            path: {
+-                solicitacao_id: string;
++            query?: {
++                limit?: number;
++                offset?: number;
+             };
++            header?: never;
++            path?: never;
+             cookie?: never;
+         };
+-        requestBody: {
+-            content: {
+-                "application/json": components["schemas"]["CancelamentoEntrada"];
+-            };
+-        };
++        requestBody?: never;
+         responses: {
+             /** @description Successful Response */
+             200: {
+@@ -2947,7 +2993,7 @@ export interface operations {
+                     [name: string]: unknown;
+                 };
+                 content: {
+-                    "application/json": components["schemas"]["SolicitacaoDetalhe"];
++                    "application/json": components["schemas"]["PaginaFilasEquipe"];
+                 };
+             };
+             /** @description Unauthorized: `/problemas/nao-autenticado` */
+@@ -2959,7 +3005,7 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/csrf-invalido`, `/problemas/troca-de-senha-obrigatoria` */
++            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/troca-de-senha-obrigatoria` */
+             403: {
+                 headers: {
+                     [name: string]: unknown;
+@@ -2968,24 +3014,6 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Not Found */
+-            404: {
+-                headers: {
+-                    [name: string]: unknown;
+-                };
+-                content: {
+-                    "application/problem+json": components["schemas"]["Problema"];
+-                };
+-            };
+-            /** @description Conflict: `/problemas/transicao-invalida` */
+-            409: {
+-                headers: {
+-                    [name: string]: unknown;
+-                };
+-                content: {
+-                    "application/problem+json": components["schemas"]["Problema"];
+-                };
+-            };
+             /** @description Unprocessable Entity */
+             422: {
+                 headers: {
+@@ -2997,12 +3025,14 @@ export interface operations {
+             };
+         };
+     };
+-    confirmar_api_v1_agendamentos__agendamento_id__confirmar_post: {
++    agendamentos_do_dia_api_v1_equipe_filas__fila_id__agendamentos_get: {
+         parameters: {
+-            query?: never;
++            query: {
++                data: string;
++            };
+             header?: never;
+             path: {
+-                agendamento_id: string;
++                fila_id: string;
+             };
+             cookie?: never;
+         };
+@@ -3014,7 +3044,7 @@ export interface operations {
+                     [name: string]: unknown;
+                 };
+                 content: {
+-                    "application/json": components["schemas"]["SolicitacaoDetalhe"];
++                    "application/json": components["schemas"]["AgendamentoDoDia"][];
+                 };
+             };
+             /** @description Unauthorized: `/problemas/nao-autenticado` */
+@@ -3026,7 +3056,7 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/csrf-invalido`, `/problemas/troca-de-senha-obrigatoria` */
++            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/troca-de-senha-obrigatoria` */
+             403: {
+                 headers: {
+                     [name: string]: unknown;
+@@ -3044,15 +3074,6 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Conflict: `/problemas/transicao-invalida`, `/problemas/proposta-expirada` */
+-            409: {
+-                headers: {
+-                    [name: string]: unknown;
+-                };
+-                content: {
+-                    "application/problem+json": components["schemas"]["Problema"];
+-                };
+-            };
+             /** @description Unprocessable Entity */
+             422: {
+                 headers: {
+@@ -3064,12 +3085,12 @@ export interface operations {
+             };
+         };
+     };
+-    recusar_api_v1_agendamentos__agendamento_id__recusar_post: {
++    criterios_da_equipe_api_v1_equipe_filas__fila_id__criterios_get: {
+         parameters: {
+             query?: never;
+             header?: never;
+             path: {
+-                agendamento_id: string;
++                fila_id: string;
+             };
+             cookie?: never;
+         };
+@@ -3081,7 +3102,7 @@ export interface operations {
+                     [name: string]: unknown;
+                 };
+                 content: {
+-                    "application/json": components["schemas"]["SolicitacaoDetalhe"];
++                    "application/json": components["schemas"]["CriterioEquipeSaida"][];
+                 };
+             };
+             /** @description Unauthorized: `/problemas/nao-autenticado` */
+@@ -3093,7 +3114,7 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/csrf-invalido`, `/problemas/troca-de-senha-obrigatoria` */
++            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/troca-de-senha-obrigatoria` */
+             403: {
+                 headers: {
+                     [name: string]: unknown;
+@@ -3111,15 +3132,6 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Conflict: `/problemas/transicao-invalida`, `/problemas/proposta-expirada` */
+-            409: {
+-                headers: {
+-                    [name: string]: unknown;
+-                };
+-                content: {
+-                    "application/problem+json": components["schemas"]["Problema"];
+-                };
+-            };
+             /** @description Unprocessable Entity */
+             422: {
+                 headers: {
+@@ -3131,14 +3143,18 @@ export interface operations {
+             };
+         };
+     };
+-    listar_filas_api_v1_equipe_filas_get: {
++    painel_api_v1_equipe_filas__fila_id__solicitacoes_get: {
+         parameters: {
+             query?: {
++                status?: components["schemas"]["StatusSolicitacao"] | null;
++                ordenacao?: "prioridade" | "chegada";
+                 limit?: number;
+                 offset?: number;
+             };
+             header?: never;
+-            path?: never;
++            path: {
++                fila_id: string;
++            };
+             cookie?: never;
+         };
+         requestBody?: never;
+@@ -3149,7 +3165,7 @@ export interface operations {
+                     [name: string]: unknown;
+                 };
+                 content: {
+-                    "application/json": components["schemas"]["PaginaFilasEquipe"];
++                    "application/json": components["schemas"]["PainelSaida"];
+                 };
+             };
+             /** @description Unauthorized: `/problemas/nao-autenticado` */
+@@ -3170,6 +3186,15 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
++            /** @description Not Found */
++            404: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/problem+json": components["schemas"]["Problema"];
++                };
++            };
+             /** @description Unprocessable Entity */
+             422: {
+                 headers: {
+@@ -3179,15 +3204,13 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-        };
+-    };
+-    painel_api_v1_equipe_filas__fila_id__solicitacoes_get: {
+-        parameters: {
+-            query?: {
+-                status?: components["schemas"]["StatusSolicitacao"] | null;
+-                ordenacao?: "prioridade" | "chegada";
+-                limit?: number;
+-                offset?: number;
++        };
++    };
++    painel_de_vagas_api_v1_equipe_filas__fila_id__vagas_get: {
++        parameters: {
++            query: {
++                de: string;
++                ate: string;
+             };
+             header?: never;
+             path: {
+@@ -3203,7 +3226,7 @@ export interface operations {
+                     [name: string]: unknown;
+                 };
+                 content: {
+-                    "application/json": components["schemas"]["PainelSaida"];
++                    "application/json": components["schemas"]["PainelVagasSaida"];
+                 };
+             };
+             /** @description Unauthorized: `/problemas/nao-autenticado` */
+@@ -3244,13 +3267,16 @@ export interface operations {
+             };
+         };
+     };
+-    detalhar_api_v1_equipe_solicitacoes__solicitacao_id__get: {
++    indicadores_api_v1_equipe_indicadores_get: {
+         parameters: {
+-            query?: never;
+-            header?: never;
+-            path: {
+-                solicitacao_id: string;
++            query: {
++                de: string;
++                ate: string;
++                unidade_id?: string | null;
++                fila_id?: string | null;
+             };
++            header?: never;
++            path?: never;
+             cookie?: never;
+         };
+         requestBody?: never;
+@@ -3261,7 +3287,7 @@ export interface operations {
+                     [name: string]: unknown;
+                 };
+                 content: {
+-                    "application/json": components["schemas"]["SolicitacaoEquipeSaida"];
++                    "application/json": components["schemas"]["IndicadoresSaida"];
+                 };
+             };
+             /** @description Unauthorized: `/problemas/nao-autenticado` */
+@@ -3300,14 +3326,23 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
++            /** @description Service Unavailable: `/problemas/consulta-demorada` */
++            503: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/problem+json": components["schemas"]["Problema"];
++                };
++            };
+         };
+     };
+-    criterios_da_equipe_api_v1_equipe_filas__fila_id__criterios_get: {
++    detalhar_api_v1_equipe_solicitacoes__solicitacao_id__get: {
+         parameters: {
+             query?: never;
+             header?: never;
+             path: {
+-                fila_id: string;
++                solicitacao_id: string;
+             };
+             cookie?: never;
+         };
+@@ -3319,7 +3354,7 @@ export interface operations {
+                     [name: string]: unknown;
+                 };
+                 content: {
+-                    "application/json": components["schemas"]["CriterioEquipeSaida"][];
++                    "application/json": components["schemas"]["SolicitacaoEquipeSaida"];
+                 };
+             };
+             /** @description Unauthorized: `/problemas/nao-autenticado` */
+@@ -3502,15 +3537,14 @@ export interface operations {
+             };
+         };
+     };
+-    agendamentos_do_dia_api_v1_equipe_filas__fila_id__agendamentos_get: {
++    listar_filas_api_v1_filas_get: {
+         parameters: {
+-            query: {
+-                data: string;
++            query?: {
++                limit?: number;
++                offset?: number;
+             };
+             header?: never;
+-            path: {
+-                fila_id: string;
+-            };
++            path?: never;
+             cookie?: never;
+         };
+         requestBody?: never;
+@@ -3521,7 +3555,7 @@ export interface operations {
+                     [name: string]: unknown;
+                 };
+                 content: {
+-                    "application/json": components["schemas"]["AgendamentoDoDia"][];
++                    "application/json": components["schemas"]["PaginaFilas"];
+                 };
+             };
+             /** @description Unauthorized: `/problemas/nao-autenticado` */
+@@ -3542,15 +3576,6 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Not Found */
+-            404: {
+-                headers: {
+-                    [name: string]: unknown;
+-                };
+-                content: {
+-                    "application/problem+json": components["schemas"]["Problema"];
+-                };
+-            };
+             /** @description Unprocessable Entity */
+             422: {
+                 headers: {
+@@ -3562,20 +3587,16 @@ export interface operations {
+             };
+         };
+     };
+-    presenca_api_v1_equipe_agendamentos__agendamento_id__presenca_post: {
++    detalhar_fila_api_v1_filas__fila_id__get: {
+         parameters: {
+             query?: never;
+             header?: never;
+             path: {
+-                agendamento_id: string;
++                fila_id: string;
+             };
+             cookie?: never;
+         };
+-        requestBody: {
+-            content: {
+-                "application/json": components["schemas"]["PresencaEntrada"];
+-            };
+-        };
++        requestBody?: never;
+         responses: {
+             /** @description Successful Response */
+             200: {
+@@ -3583,7 +3604,7 @@ export interface operations {
+                     [name: string]: unknown;
+                 };
+                 content: {
+-                    "application/json": components["schemas"]["SolicitacaoEquipeSaida"];
++                    "application/json": components["schemas"]["FilaDetalheSaida"];
+                 };
+             };
+             /** @description Unauthorized: `/problemas/nao-autenticado` */
+@@ -3595,7 +3616,7 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/csrf-invalido`, `/problemas/troca-de-senha-obrigatoria` */
++            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/troca-de-senha-obrigatoria` */
+             403: {
+                 headers: {
+                     [name: string]: unknown;
+@@ -3613,15 +3634,6 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Conflict: `/problemas/transicao-invalida`, `/problemas/tolerancia-nao-encerrada` */
+-            409: {
+-                headers: {
+-                    [name: string]: unknown;
+-                };
+-                content: {
+-                    "application/problem+json": components["schemas"]["Problema"];
+-                };
+-            };
+             /** @description Unprocessable Entity */
+             422: {
+                 headers: {
+@@ -3633,16 +3645,11 @@ export interface operations {
+             };
+         };
+     };
+-    painel_de_vagas_api_v1_equipe_filas__fila_id__vagas_get: {
++    health_api_v1_health_get: {
+         parameters: {
+-            query: {
+-                de: string;
+-                ate: string;
+-            };
++            query?: never;
+             header?: never;
+-            path: {
+-                fila_id: string;
+-            };
++            path?: never;
+             cookie?: never;
+         };
+         requestBody?: never;
+@@ -3653,20 +3660,13 @@ export interface operations {
+                     [name: string]: unknown;
+                 };
+                 content: {
+-                    "application/json": components["schemas"]["PainelVagasSaida"];
+-                };
+-            };
+-            /** @description Unauthorized: `/problemas/nao-autenticado` */
+-            401: {
+-                headers: {
+-                    [name: string]: unknown;
+-                };
+-                content: {
+-                    "application/problem+json": components["schemas"]["Problema"];
++                    "application/json": {
++                        [key: string]: string;
++                    };
+                 };
+             };
+-            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/troca-de-senha-obrigatoria` */
+-            403: {
++            /** @description Service Unavailable */
++            503: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+@@ -3674,17 +3674,28 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Not Found */
+-            404: {
++        };
++    };
++    eu_api_v1_me_get: {
++        parameters: {
++            query?: never;
++            header?: never;
++            path?: never;
++            cookie?: never;
++        };
++        requestBody?: never;
++        responses: {
++            /** @description Successful Response */
++            200: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+                 content: {
+-                    "application/problem+json": components["schemas"]["Problema"];
++                    "application/json": components["schemas"]["EuSaida"];
+                 };
+             };
+-            /** @description Unprocessable Entity */
+-            422: {
++            /** @description Unauthorized: `/problemas/nao-autenticado` */
++            401: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+@@ -3694,13 +3705,12 @@ export interface operations {
+             };
+         };
+     };
+-    indicadores_api_v1_equipe_indicadores_get: {
++    listar_api_v1_solicitacoes_get: {
+         parameters: {
+-            query: {
+-                de: string;
+-                ate: string;
+-                unidade_id?: string | null;
+-                fila_id?: string | null;
++            query?: {
++                situacao?: ("abertas" | "encerradas") | null;
++                limit?: number;
++                offset?: number;
+             };
+             header?: never;
+             path?: never;
+@@ -3714,7 +3724,7 @@ export interface operations {
+                     [name: string]: unknown;
+                 };
+                 content: {
+-                    "application/json": components["schemas"]["IndicadoresSaida"];
++                    "application/json": components["schemas"]["PaginaSolicitacoes"];
+                 };
+             };
+             /** @description Unauthorized: `/problemas/nao-autenticado` */
+@@ -3735,15 +3745,6 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Not Found */
+-            404: {
+-                headers: {
+-                    [name: string]: unknown;
+-                };
+-                content: {
+-                    "application/problem+json": components["schemas"]["Problema"];
+-                };
+-            };
+             /** @description Unprocessable Entity */
+             422: {
+                 headers: {
+@@ -3753,37 +3754,28 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Service Unavailable: `/problemas/consulta-demorada` */
+-            503: {
+-                headers: {
+-                    [name: string]: unknown;
+-                };
+-                content: {
+-                    "application/problem+json": components["schemas"]["Problema"];
+-                };
+-            };
+         };
+     };
+-    listar_api_v1_avisos_get: {
++    criar_api_v1_solicitacoes_post: {
+         parameters: {
+-            query?: {
+-                somente_nao_lidos?: boolean;
+-                limit?: number;
+-                offset?: number;
+-            };
++            query?: never;
+             header?: never;
+             path?: never;
+             cookie?: never;
+         };
+-        requestBody?: never;
++        requestBody: {
++            content: {
++                "application/json": components["schemas"]["SolicitacaoEntrada"];
++            };
++        };
+         responses: {
+             /** @description Successful Response */
+-            200: {
++            201: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+                 content: {
+-                    "application/json": components["schemas"]["PaginaAvisos"];
++                    "application/json": components["schemas"]["SolicitacaoDetalhe"];
+                 };
+             };
+             /** @description Unauthorized: `/problemas/nao-autenticado` */
+@@ -3795,7 +3787,7 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Forbidden: `/problemas/troca-de-senha-obrigatoria` */
++            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/csrf-invalido`, `/problemas/sem-consentimento`, `/problemas/troca-de-senha-obrigatoria` */
+             403: {
+                 headers: {
+                     [name: string]: unknown;
+@@ -3804,6 +3796,15 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
++            /** @description Conflict: `/problemas/nao-elegivel`, `/problemas/solicitacao-duplicada` */
++            409: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/problem+json": components["schemas"]["Problema"];
++                };
++            };
+             /** @description Unprocessable Entity */
+             422: {
+                 headers: {
+@@ -3815,11 +3816,13 @@ export interface operations {
+             };
+         };
+     };
+-    contagem_api_v1_avisos_contagem_get: {
++    detalhar_api_v1_solicitacoes__solicitacao_id__get: {
+         parameters: {
+             query?: never;
+             header?: never;
+-            path?: never;
++            path: {
++                solicitacao_id: string;
++            };
+             cookie?: never;
+         };
+         requestBody?: never;
+@@ -3830,7 +3833,7 @@ export interface operations {
+                     [name: string]: unknown;
+                 };
+                 content: {
+-                    "application/json": components["schemas"]["ContagemSaida"];
++                    "application/json": components["schemas"]["SolicitacaoDetalhe"];
+                 };
+             };
+             /** @description Unauthorized: `/problemas/nao-autenticado` */
+@@ -3842,7 +3845,7 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Forbidden: `/problemas/troca-de-senha-obrigatoria` */
++            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/troca-de-senha-obrigatoria` */
+             403: {
+                 headers: {
+                     [name: string]: unknown;
+@@ -3851,26 +3854,8 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-        };
+-    };
+-    marcar_todos_api_v1_avisos_lidos_post: {
+-        parameters: {
+-            query?: never;
+-            header?: never;
+-            path?: never;
+-            cookie?: never;
+-        };
+-        requestBody?: never;
+-        responses: {
+-            /** @description Successful Response */
+-            204: {
+-                headers: {
+-                    [name: string]: unknown;
+-                };
+-                content?: never;
+-            };
+-            /** @description Unauthorized: `/problemas/nao-autenticado` */
+-            401: {
++            /** @description Not Found */
++            404: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+@@ -3878,8 +3863,8 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Forbidden: `/problemas/csrf-invalido`, `/problemas/troca-de-senha-obrigatoria` */
+-            403: {
++            /** @description Unprocessable Entity */
++            422: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+@@ -3889,23 +3874,29 @@ export interface operations {
+             };
+         };
+     };
+-    marcar_lido_api_v1_avisos__aviso_id__lido_post: {
++    cancelar_api_v1_solicitacoes__solicitacao_id__cancelar_post: {
+         parameters: {
+             query?: never;
+             header?: never;
+             path: {
+-                aviso_id: string;
++                solicitacao_id: string;
+             };
+             cookie?: never;
+         };
+-        requestBody?: never;
++        requestBody: {
++            content: {
++                "application/json": components["schemas"]["CancelamentoEntrada"];
++            };
++        };
+         responses: {
+             /** @description Successful Response */
+-            204: {
++            200: {
+                 headers: {
+                     [name: string]: unknown;
+                 };
+-                content?: never;
++                content: {
++                    "application/json": components["schemas"]["SolicitacaoDetalhe"];
++                };
+             };
+             /** @description Unauthorized: `/problemas/nao-autenticado` */
+             401: {
+@@ -3916,7 +3907,7 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
+-            /** @description Forbidden: `/problemas/csrf-invalido`, `/problemas/troca-de-senha-obrigatoria` */
++            /** @description Forbidden: `/problemas/sem-permissao`, `/problemas/csrf-invalido`, `/problemas/troca-de-senha-obrigatoria` */
+             403: {
+                 headers: {
+                     [name: string]: unknown;
+@@ -3934,6 +3925,15 @@ export interface operations {
+                     "application/problem+json": components["schemas"]["Problema"];
+                 };
+             };
++            /** @description Conflict: `/problemas/transicao-invalida` */
++            409: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    "application/problem+json": components["schemas"]["Problema"];
++                };
++            };
+             /** @description Unprocessable Entity */
+             422: {
+                 headers: {
+diff --git a/docs/architecture/frontend.md b/docs/architecture/frontend.md
+index a70b34c..8b76488 100644
+--- a/docs/architecture/frontend.md
++++ b/docs/architecture/frontend.md
+@@ -185,3 +185,7 @@ A confirmação explica a entrada na fila e a possibilidade de proposta automát
+ O formulário permanece somente na memória da página. Cancelamento e época da sessão impedem efeitos de respostas tardias após desmontar, sair ou entrar novamente. Revalidação de sessão mantém formulário e diálogo quando o acesso continua válido. O diálogo compartilhado contém o foco, fecha com Esc e o devolve ao acionador. No desktop, respostas e formulário ficam lado a lado; em telas estreitas, os blocos são empilhados.
+ 
+ Após o MVP ficam “Critérios da regulação”, com GET dos critérios e PUT das respostas da equipe, e as melhorias de contrato: posição e agendamento ativo no detalhe, perguntas ainda não respondidas, critérios associados aos níveis de risco e controle de versão para concorrência. Não há edição de respostas nesta tela.
++
++## Indicadores do gestor
++
++A rota `/equipe/indicadores` é carregada sob demanda com React.lazy e permitida apenas para GESTOR e ADMIN. Usa indicadores agregados da API, filtros de datas civis em Recife e fila do escopo, com estado na URL. Últimas 4/8 semanas correspondem a 28/56 dias inclusivos até hoje. O período personalizado consulta somente ao aplicar. Os cartões explicam os recortes de cada métrica; taxas nulas não representam zero. A fila atual independe do período. O gráfico semanal possui tabela acessível expansível. Não há persistência, polling nem repetição automática de consultas; o Retry-After é respeitado na nova tentativa.
+diff --git a/docs/product/contexto-frontend.md b/docs/product/contexto-frontend.md
+index cd171da..64fd89a 100644
+--- a/docs/product/contexto-frontend.md
++++ b/docs/product/contexto-frontend.md
+@@ -90,7 +90,7 @@
+ 8. **Detalhe da solicitação (equipe):** respostas, histórico completo, **classificar risco** e responder os critérios da regulação.
+ 9. **Agenda do dia:** registrar presença ou falta.
+ 10. **Vagas:** visão do período, com destaque para as vagas livres que não puderam ser propostas.
+-11. **Indicadores** (gestor): taxa de confirmação, faltas, tempo médio e vagas aproveitadas. **A API ainda vai ser criada**; deixe a tela com dados de exemplo e o lugar das chamadas marcado.
++11. **Indicadores** (gestor): GET /api/v1/equipe/indicadores já existe; o contrato é docs/architecture/openapi.json. A tela usa os indicadores agregados, com mediana e P90 de espera.
+ 
+ ## 6. Regras que as telas NÃO podem quebrar
+ 
+@@ -113,7 +113,7 @@ As imagens das telas mostram o **visual** (cores, espaçamentos, componentes), m
+ 
+ ## 8. Lacunas conhecidas da API (não invente; marque com `// TODO(api)`)
+ 
+-- Indicadores (ainda sem rota).
++- Indicadores: GET /api/v1/equipe/indicadores, para GESTOR e ADMIN.
+ 
+ Já resolvidos no backend (21/10): termo vigente (`GET /termos/vigente`), proposta ativa na lista de "Meus atendimentos", critérios da equipe (`GET /equipe/filas/{id}/criterios`), paginação uniforme `{ total, itens }`, enums e erros declarados no OpenAPI. Confira sempre o OpenAPI antes de cada tela.
+ 
+diff --git a/docs/validation/indicadores-entrega.md b/docs/validation/indicadores-entrega.md
+new file mode 100644
+index 0000000..595c3e4
+--- /dev/null
++++ b/docs/validation/indicadores-entrega.md
+@@ -0,0 +1,47 @@
++# Entrega — tela de indicadores
++
++07/11/2026. Registro da implementação inicial sobre o ZIP, originalmente sem histórico Git. Após autorização explícita do usuário para publicação, a entrega foi aplicada à branch frontend/indicadores, baseada na main e5b2f53. O conteúdo dos arquivos existentes foi comparado com o ZIP, desconsiderando finais de linha, antes da aplicação. Sem Docker Compose; apenas dados sintéticos.
++
++## O que foi implementado
++
++Rota /equipe/indicadores para GESTOR e ADMIN, menu restrito e redirecionamento de ATENDENTE antes da consulta. Filtros de período e fila, parâmetros de/ate/fila na URL, validação local e aplicação explícita de datas personalizadas. Cartões com explicações, taxas nulas como travessão, mediana/P90 e amostra; fila atual com riscos em cor e texto. Gráfico CSS e tabela expansível acessível; estados de carregamento, erro, consulta vazia e Retry-After. Sem polling ou persistência no navegador.
++
++A navegação de retorno restaura as datas do formulário. As consultas usam o HTTP e o ciclo de sessão existentes, com AbortSignal. B1/B2 permanecem cobertos pelos testes existentes; não foi criada uma bateria completa de cenários de troca de identidade específica desta tela.
++
++Arquivos: a lista exata está em lista de arquivos no diff desta branch. Foram criados Indicadores.tsx, indicadores.css, periodo-indicadores.ts e respectivos testes. Foram alterados Rotas.tsx, EquipeLayout.tsx, Fila.test.tsx, schema.d.ts (pela ferramenta), as três documentações autorizadas e somente a linha de indicadores de PLAN.md, além da normalização de fim de arquivo.
++
++## Verificações e limitações
++
++- Node 24.14.0: compatível com engines do projeto. npm ci concluído após autorização de rede e uso de cache no workspace.
++- Lint e TypeScript: passaram.
++- Build: passou usando npm run build -- --configLoader native. O comando sem a opção falha no carregador padrão do esbuild por acesso negado ao diretório ancestral no ambiente Windows restrito.
++- Testes: suíte completa final passou com 484 testes em 18 arquivos, incluindo axe, controle de acesso, filtros e histórico.
++- Axe: passou na tela com tabela aberta. O jsdom imprime avisos de getContext de canvas; não são falhas de testes nem comprovam contraste real.
++- API: npm run api:generate -- --check sem URL falhou porque o Python .venv do backend não está disponível. A ferramenta regenerou os tipos a partir do OpenAPI salvo no ZIP; a conferência com URL file: passou. Isso não compara o contrato com uma API em execução.
++- Git: o ZIP original não tinha histórico; na publicação foi usado clone da main, com git status/log e git diff --check. A conferência de whitespace passou.
++- Visual: navegador Edge headless com API interceptada e dados sintéticos, 1280/1024/360 px. Capturas entregues; nenhuma rolagem horizontal da página, storage local e de sessão vazios. Não foi um E2E com backend real.
++- Original: pacote JS principal 511,30 kB (gzip 158,60). Alterado: 502,26 kB (gzip 156,67). Carregamento sob demanda também aplicado ao detalhe existente da equipe para compensar o custo inicial de lazy/Suspense. O aviso acima de 500 kB permanece, assim como dois avisos conhecidos de comentários do Zod.
++
++## Divergências e decisões
++
++- Não se confirmou branch ou atualização da main a partir do ZIP.
++- Filtro por unidade não foi inventado: FilaEquipeSaida não retorna unidade_id.
++- Últimas 4/8 semanas significam 28/56 dias inclusivos até hoje.
++- Personalizado exige início anterior ao fim, conforme o prompt; o backend aceita um único dia. Para Este mês no dia 1, a tela admite esse único dia conforme o contrato, para manter o preset funcional.
++- Confirmadas são agrupadas pela data da proposta; espera usa primeiras confirmações no período. A tela explica as âncoras diferentes.
++- O contrato salvo reorganiza os tipos gerados em relação ao arquivo recebido; schema.d.ts foi regenerado pela ferramenta, sem editar DTOs manualmente.
++- A cobertura nova não esgota todos os cenários pedidos: liberação do botão ao vencer Retry-After, resposta antiga durante logout, vazio e manutenção dos cartões durante atraso merecem testes específicos adicionais. Não foi declarada revisão externa.
++
++## E2E manual para João
++
++1. No ambiente preparado por João, usar somente o seed sintético de 8 semanas e HTTPS. João entra com gestor.cisam e suas credenciais, sem transmiti-las no chat.
++2. Abrir Indicadores pelo menu, confirmar padrão de 4 semanas e comparar os números com a resposta da API. Conferir explicações, nulos e os três riscos.
++3. Escolher 8 semanas, Este mês, uma fila e Todas. Na aba Rede, conferir uma consulta de indicadores por mudança e ausência de polling. Uma renovação de sessão pode repetir a requisição autenticada, conforme o transporte existente.
++4. Personalizado: digitar não consulta; Aplicar consulta; datas inválidas/futuras ou mais de 366 dias não consultam. Usar Voltar/Avançar e conferir URL, formulário e dados.
++5. Conferir barras e tabela, teclado, foco, leitor de tela e 1280/1024/360 px.
++6. Simular falhas 403/404/422 e timeout 503 num ambiente de teste. Conferir mensagem neutra, erro junto ao período e Retry-After; nova tentativa não deve liberar antes do prazo.
++7. Testar acesso direto como atendente: redireciona à Fila sem consultar indicadores. Como paciente, não acessa a área da equipe.
++8. Atrasar uma consulta, sair e entrar com outro usuário sintético; confirmar que nenhum dado ou erro tardio da sessão anterior altera a nova sessão. Testar expiração/renovação e troca obrigatória de senha.
++9. Confirmar auditoria CONSULTAR_INDICADORES com ator e filtros, sem dados clínicos. Não publicar dados ou credenciais das sessões.
++
++A avaliação jurídica e suas pendências estão em indicadores-lgpd-pernambuco.md. O sistema não foi certificado para tratamento de dados reais.
+diff --git a/docs/validation/indicadores-lgpd-pernambuco.md b/docs/validation/indicadores-lgpd-pernambuco.md
+new file mode 100644
+index 0000000..323f906
+--- /dev/null
++++ b/docs/validation/indicadores-lgpd-pernambuco.md
+@@ -0,0 +1,33 @@
++# Verificação de privacidade e normas — Central Saúde UPE
++
++Data: 07/11/2026. Escopo: inspeção estática do ZIP e da tela de indicadores, testes locais com dados sintéticos e consulta às fontes abaixo. Não houve auditoria do ambiente de produção nem verificação de todas as normas sanitárias, de regulação de filas ou de todos os atos estaduais. A conclusão não é uma certificação jurídica.
++
++**Resultado: adequação parcial demonstrada; conformidade integral para dados reais não comprovada.**
++
++## Referências e limites
++
++O [repositório indicado pelo usuário](https://github.com/ctresb/leis) foi consultado como ponto de partida. Seu README avisa que conversões automáticas/OCR não substituem a publicação oficial. As tentativas de leitura das pastas e normas individuais falharam (cache, acesso e TLS). Portanto não atribuí ao acervo uma validação normativa que não consegui realizar.
++
++A [LGPD atualizada, disponibilizada pela Câmara](https://www2.camara.leg.br/legin/fed/lei/2018/lei-13709-14-agosto-2018-787077-normaatualizada-pl.html) fundamenta a análise dos controles e pendências abaixo. É preciso definir a base legal para dados sensíveis, atender os direitos do titular e demonstrar segurança e responsabilização. Consentimento não é a única base legal disponível para saúde e políticas públicas. Essas escolhas cabem ao controlador institucional, considerando a operação concreta.
++
++A [SCGE](https://www.scge.pe.gov.br/lgpd-rede-de-encarregados/) identifica o Decreto 49.265/2020 como política estadual e orienta o exercício dos direitos pela Ouvidoria. Também relaciona as Leis 16.420/2018, 14.804/2012, 15.529/2015 e a política de segurança do Decreto 49.914/2020. Esta consulta não confirmou integralmente todos esses textos ou suas alterações; a matriz abaixo indica o que está comprovado e o que depende da instituição.
++
++A [Lei estadual 14.804/2012, art. 17, no portal da SEFAZ](https://www.sefaz.pe.gov.br/Legislacao/Tributaria/Documents/legislacao/Leis_Tributarias/2012/Lei14804_2012.htm) protege informações pessoais e restringe o acesso às relativas à intimidade. O prazo máximo de restrição de acesso ali previsto não é autorização genérica para armazenar todos os dados por cem anos. Indicadores internos não devem ser publicados automaticamente sob argumento de transparência.
++
++## Evidências e ações
++
++| Tema | Evidência no projeto | Conclusão / ação |
++|---|---|---|
++| Minimização | Endpoint de indicadores retorna contagens, razões, espera e riscos agregados; tela não consulta listas de pacientes | Controle presente no escopo examinado |
++| Papéis e escopo | Backend exige GESTOR/ADMIN, aplica escopo às consultas e responde 404 para filtro não autorizado; frontend impede atendente de montar a tela | Controle presente; não substitui validação de produção |
++| Rastreabilidade | Rota registra CONSULTAR_INDICADORES com ator e filtros, sem respostas clínicas | Controle presente por inspeção do código |
++| Sessão e armazenamento | Transporte existente usa cookies, CSRF, cancelamento e épocas de sessão; nova tela usa memória e URL apenas com datas/UUID | Controle reaproveitado; armazenamento vazio nas conferências visuais |
++| Reidentificação | Recortes por fila e tempo podem produzir grupos pequenos | Avaliar risco, acesso, cruzamento e eventual supressão no backend; agregação não garante anonimização |
++| Base legal | data-protection.md descreve AGENDAMENTO como consentimento obrigatório | Validar necessidade e base por finalidade com UPE; não alterar unilateralmente o fundamento institucional |
++| Retenção | Prazos de solicitações encerradas e auditoria ainda a definir | Aprovar tabela de temporalidade, descarte e conservação legal, incluindo backups |
++| Direitos | Documento afirma revogação, mas exportação/exclusão ficam como evolução; implementação do fluxo completo não foi comprovada | Definir canal institucional e atendimento de acesso, correção, revogação e demais direitos, com exceções legais; não exige necessariamente um botão para cada direito |
++| Governança estadual | Não foi comprovado vínculo formal desta aplicação ao encarregado, política local e Ouvidoria | Validar com encarregado da UPE e documentar responsabilidades, operadores, inventário e canal |
++| Incidentes | incident-response.md declara procedimento apenas para protótipo | Adaptar procedimento para dados reais, responsáveis, avaliação e comunicação conforme regras vigentes |
++| Implantação | HTTPS, backups e demais controles dependem do ambiente; PLAN registra pendências | Validar no destino; não inferir implementação a partir do arquivo de configuração |
++
++O protótipo deve continuar usando somente dados sintéticos. Antes de uso real, a UPE precisa decidir os itens institucionais, avaliar impacto e riscos e aprovar a implantação. Não foi alterado backend, regra de fila, política de retenção ou termo de consentimento nesta entrega.
+-- 
+2.55.0.windows.4
+
